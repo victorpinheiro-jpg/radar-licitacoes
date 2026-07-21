@@ -15,11 +15,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Cria a memória temporária do site para guardar as licitações
 if 'licitacoes_salvas' not in st.session_state:
     st.session_state['licitacoes_salvas'] = pd.DataFrame()
 
-# --- TRADUTOR DE CÓDIGOS DO GOVERNO ---
 MAPA_MODALIDADES = {
     "Leilão": 1, 
     "Diálogo Competitivo": 2, 
@@ -28,7 +26,7 @@ MAPA_MODALIDADES = {
     "Pregão Eletrônico": 6
 }
 
-# --- 2. MOTOR DE BUSCA (COM INSISTÊNCIA AUTOMÁTICA E FATIADOR) ---
+# --- 2. MOTOR DE BUSCA ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
     headers = {
@@ -42,7 +40,6 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
     if not modalidades_selecionadas:
         modalidades_selecionadas = ["Concorrência", "Leilão", "Diálogo Competitivo"]
         
-    # Quebra o período grande em pedaços de 15 dias (mais leve para o governo)
     chunks = []
     atual = data_inicio
     while atual <= data_fim:
@@ -62,7 +59,7 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
             
             sucesso = False
             tentativas = 0
-            max_tentativas = 3 # O robô vai tentar 3 vezes antes de desistir
+            max_tentativas = 3 
             
             while not sucesso and tentativas < max_tentativas:
                 try:
@@ -73,7 +70,7 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                         sucesso = True
                     else:
                         tentativas += 1
-                        time.sleep(2) # Espera 2 segs se der erro antes de tentar de novo
+                        time.sleep(2) 
                 except requests.exceptions.Timeout:
                     tentativas += 1
                     time.sleep(2)
@@ -81,11 +78,9 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                     tentativas += 1
                     time.sleep(2)
             
-            # Se tentou 3 vezes e não conseguiu, aí sim avisa o usuário
             if not sucesso:
                 erros.append(f"{modalidade} (bloco {str_inicio}): O Governo bloqueou após 3 tentativas.")
                 
-            # Pausa de 1.5 segundos entre cada bloco que deu certo
             time.sleep(1.5)
             
     return todos_resultados, list(set(erros))
@@ -109,14 +104,23 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
         passou_valor = (valor_min <= valor <= valor_max)
         
         if passou_palavra and passou_valor:
-            link = lic.get("linkSistemaOrigem", "")
+            link_original = lic.get("linkSistemaOrigem", "")
+            
+            # CORREÇÃO DEFINITIVA DOS LINKS
+            if not link_original or str(link_original).strip() == "":
+                link_final = None # Deixa vazio para o Streamlit não criar link falso
+            elif not link_original.startswith("http"):
+                link_final = "https://" + link_original
+            else:
+                link_final = link_original
+
             resultados.append({
                 "Órgão": lic.get("orgaoEntidade", {}).get("razaoSocial", "N/A"),
                 "Modalidade": lic.get("modalidadeNome", "N/A"),
                 "Objeto": lic.get("objeto"),
                 "Valor Estimado": valor,
                 "Data Publicação": lic.get("dataPublicacaoPncp"),
-                "Link": link if link else "Sem Link"
+                "Link": link_final
             })
             ids_adicionados.add(id_unico)
             
@@ -126,7 +130,6 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
 st.title("🏛️ Radar Estratégico de Licitações")
 st.divider()
 
-# Criando as Abas de Navegação
 aba_busca, aba_interesse = st.tabs(["🔍 Nova Busca", "⭐ Licitações de Interesse"])
 
 with aba_busca:
@@ -192,7 +195,8 @@ with aba_busca:
                             selecionadas = selecionadas.drop(columns=["Acompanhar"])
                             
                             if not selecionadas.empty:
-                                st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Link"])
+                                # Garantimos que não vai duplicar se você salvar a mesma licitação de novo
+                                st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Objeto"])
                                 st.success("Licitações salvas com sucesso! Vá para a aba 'Licitações de Interesse' no topo.")
                             else:
                                 st.warning("Você não marcou nenhuma licitação na caixinha.")
