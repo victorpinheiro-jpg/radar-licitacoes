@@ -44,21 +44,6 @@ st.markdown("""
 if 'licitacoes_salvas' not in st.session_state:
     st.session_state['licitacoes_salvas'] = pd.DataFrame()
 
-# --- INSERINDO A LOGO COM ELEGÂNCIA (MENOR E CENTRALIZADA) ---
-with st.sidebar:
-    st.write("") # Dá um pequeno espaço no topo
-    
-    # Criamos 3 colunas e colocamos a logo na coluna do meio para ela ficar menor e centralizada
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        if os.path.exists("asa_logobrasao_verde.png"):
-            st.image("asa_logobrasao_verde.png", use_column_width=True)
-        else:
-            st.markdown("<h3 style='text-align: center; color: #436468;'>A/S</h3>", unsafe_allow_html=True)
-            
-    st.write("") # Dá um espaço em baixo da logo
-    st.markdown("---")
-
 # --- TRADUTOR DE CÓDIGOS DO GOVERNO ---
 MAPA_MODALIDADES = {
     "Leilão": 1, 
@@ -168,7 +153,20 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
     return pd.DataFrame(resultados)
 
 # --- 3. FRONTEND E ABAS ---
-st.title("🏛️ Radar Estratégico de Licitações")
+
+# Cabeçalho Principal Integrado (Logo + Título)
+col_logo, col_titulo = st.columns([1, 8])
+
+with col_logo:
+    if os.path.exists("asa_logobrasao_verde.png"):
+        st.image("asa_logobrasao_verde.png")
+    else:
+        st.markdown("<h2 style='text-align: center; color: #436468; margin-top: 15px;'>A/S</h2>", unsafe_allow_html=True)
+
+with col_titulo:
+    st.title("Radar Estratégico de Licitações")
+    st.markdown("Monitoramento inteligente via **Portal Nacional de Contratações Públicas (PNCP)**.")
+
 st.divider()
 
 aba_busca, aba_interesse = st.tabs(["🔍 Nova Busca", "⭐ Licitações de Interesse"])
@@ -197,7 +195,7 @@ with aba_busca:
 
     with col_resultados:
         if buscar:
-            with st.spinner("Varrendo os servidores do Governo..."):
+            with st.spinner("Varrendo os servidores do Governo (com tentativas automáticas em caso de erro)..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
                 
                 if erros:
@@ -272,5 +270,4 @@ with aba_interesse:
         
         if st.button("🗑️ Limpar Lista de Interesse"):
             st.session_state['licitacoes_salvas'] = pd.DataFrame()
-            st.rerun()()
             st.rerun()
