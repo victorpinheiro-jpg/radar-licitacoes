@@ -1,18 +1,40 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- 1. MOTOR DE BUSCA AVANÇADO ---
+# --- 1. CONFIGURAÇÃO VISUAL PREMIUM ---
+st.set_page_config(page_title="Radar de Infraestrutura", page_icon="⚖️", layout="wide")
+
+# CSS Customizado para deixar o site mais bonito
+st.markdown("""
+    <style>
+    .stButton>button {
+        width: 100%;
+        background-color: #1E3A8A;
+        color: white;
+        border-radius: 8px;
+        height: 3em;
+        font-weight: bold;
+    }
+    .stButton>button:hover {
+        background-color: #1e40af;
+        border-color: #1e40af;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 2rem;
+        color: #1E3A8A;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- 2. MOTOR DE BUSCA (API PNCP) ---
 @st.cache_data(ttl=1800) 
 def buscar_licitacoes_periodo(data_inicio, data_fim):
-    # Converte as datas do calendário para o formato do governo
     str_inicio = data_inicio.strftime("%Y%m%d")
     str_fim = data_fim.strftime("%Y%m%d")
     
-    # Busca até 500 resultados por vez (limite do sistema deles)
     url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&pagina=1&tamanhoPagina=500"
-    
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     try:
@@ -23,99 +45,85 @@ def buscar_licitacoes_periodo(data_inicio, data_fim):
     except:
         return []
 
-def filtrar_dados(licitacoes, palavras_chave, modalidades_selecionadas, valor_min, valor_max):
+def filtrar_dados(licitacoes, palavras_chave, modalidades_selecionadas):
     if not licitacoes:
         return pd.DataFrame()
         
     resultados = []
-    
-    # Transforma o texto digitado em uma lista de palavras (separadas por vírgula)
     lista_palavras = [p.strip().lower() for p in palavras_chave.split(',')] if palavras_chave else []
     
     for lic in licitacoes:
         objeto = str(lic.get("objeto", "")).lower()
-        modalidade_atual = lic.get("modalidadeNome", "")
-        # Se não tiver valor informado, assume 0 para não quebrar a conta
-        valor_estimado = lic.get("valorTotalEstimado") or 0.0 
+        modalidade = lic.get("modalidadeNome", "")
+        valor = lic.get("valorTotalEstimado") or 0.0 
         
-        # 1. Filtra Palavras-chave
-        passou_palavra = True
-        if lista_palavras and lista_palavras[0] != "":
-            passou_palavra = any(palavra in objeto for palavra in lista_palavras)
-            
-        # 2. Filtra Modalidade
-        passou_modalidade = True
-        if modalidades_selecionadas:
-            passou_modalidade = modalidade_atual in modalidades_selecionadas
-            
-        # 3. Filtra Valores
-        passou_valor = (valor_min <= valor_estimado <= valor_max)
+        # Filtros
+        passou_palavra = any(p in objeto for p in lista_palavras) if (lista_palavras and lista_palavras[0] != "") else True
+        passou_modalidade = modalidade in modalidades_selecionadas if modalidades_selecionadas else True
         
-        # Se passar por todos os filtros, salva para o escritório
-        if passou_palavra and passou_modalidade and passou_valor:
+        if passou_palavra and passou_modalidade:
             resultados.append({
-                "Órgão": lic.get("orgaoEntidade", {}).get("razaoSocial", "Não informado"),
+                "Órgão": lic.get("orgaoEntidade", {}).get("razaoSocial", "N/A"),
+                "Modalidade": modalidade,
                 "Objeto": lic.get("objeto"),
-                "Modalidade": modalidade_atual,
-                "Valor Estimado (R$)": valor_estimado,
-                "Data Publicação": lic.get("dataPublicacaoPncp"),
-                "Link PNCP": lic.get("linkSistemaOrigem")
+                "Valor Estimado": valor,
+                "Link do Edital": lic.get("linkSistemaOrigem")
             })
             
     return pd.DataFrame(resultados)
 
-# --- 2. O SITE (INTERFACE VISUAL) ---
-st.set_page_config(page_title="Radar de Infraestrutura", layout="wide")
-st.title("🏗️ Radar Estratégico de Licitações (PNCP)")
+# --- 3. CONSTRUÇÃO DO PAINEL (FRONTEND) ---
+st.title("🏛️ Radar Estratégico de Licitações")
+st.markdown("Monitoramento inteligente de editais e concessões via **Portal Nacional de Contratações Públicas (PNCP)**.")
+st.divider()
 
-# BARRA LATERAL (OS FILTROS REAIS AGORA)
-st.sidebar.header("🎯 Parâmetros de Busca")
+# Dividindo a tela em Duas Colunas (Filtros na esquerda, Resultados na direita)
+col_filtros, col_resultados = st.columns([1, 3], gap="large")
 
-hoje = datetime.now()
-data_inicio = st.sidebar.date_input("Data Inicial", hoje - timedelta(days=7))
-data_fim = st.sidebar.date_input("Data Final", hoje)
+with col_filtros:
+    st.subheader("🎯 Parâmetros")
+    
+    data_inicio = st.date_input("De (Data Inicial):", value=datetime(2023, 10, 1))
+    data_fim = st.date_input("Até (Data Final):", value=datetime(2023, 10, 30))
+    
+    palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "concessão, rodovia, porto")
+    
+    modalidades = ["Concorrência", "Diálogo Competitivo", "Leilão", "Pregão Eletrônico"]
+    modalidades_selecionadas = st.multiselect("Modalidades:", modalidades, default=["Concorrência"])
+    
+    buscar = st.button("🔍 Mapear Oportunidades")
 
-palavras_chave = st.sidebar.text_input("Palavras-chave (separe por vírgula)", "concessão, rodovia, porto, ferrovia, ppp")
-
-modalidades_disponiveis = [
-    "Concorrência", "Diálogo Competitivo", "Leilão", 
-    "Pregão Eletrônico", "Concurso", "Dispensa de Licitação", "Inexigibilidade"
-]
-modalidades_selecionadas = st.sidebar.multiselect(
-    "Modalidades", 
-    modalidades_disponiveis, 
-    default=["Concorrência", "Diálogo Competitivo", "Leilão"]
-)
-
-st.sidebar.subheader("💰 Faixa de Valor (R$)")
-valor_min = st.sidebar.number_input("Valor Mínimo (R$)", value=0.0, step=100000.0, format="%f")
-valor_max = st.sidebar.number_input("Valor Máximo (R$)", value=5000000000.0, step=100000.0, format="%f")
-
-# TELA PRINCIPAL
-st.write("Ajuste os filtros na barra lateral e clique no botão abaixo para extrair os dados do portal do governo.")
-
-if st.button("Buscar Oportunidades", type="primary"):
-    with st.spinner("Varrendo a base de dados do Governo Federal..."):
-        # 1. Puxa tudo no período
-        dados_brutos = buscar_licitacoes_periodo(data_inicio, data_fim)
-        
-        # 2. Passa o pente fino dos filtros do escritório
-        df_filtrado = filtrar_dados(dados_brutos, palavras_chave, modalidades_selecionadas, valor_min, valor_max)
-        
-        if not df_filtrado.empty:
-            st.success(f"Bingo! Encontramos {len(df_filtrado)} licitação(ões) nos critérios exatos da busca.")
+with col_resultados:
+    if buscar:
+        with st.spinner("Conectando ao banco de dados do Governo..."):
+            dados_brutos = buscar_licitacoes_periodo(data_inicio, data_fim)
+            df_final = filtrar_dados(dados_brutos, palavras_chave, modalidades_selecionadas)
             
-            # Formata a tabela para ficar elegante
-            st.dataframe(
-                df_filtrado.style.format({"Valor Estimado (R$)": "R$ {:,.2f}"}), 
-                use_container_width=True
-            )
-            
-            st.download_button(
-                label="📥 Exportar relatório para o Excel (CSV)",
-                data=df_filtrado.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig'),
-                file_name="relatorio_prospeccao.csv",
-                mime="text/csv"
-            )
-        else:
-            st.warning("Nenhuma licitação bateu com todos esses filtros simultaneamente. Tente ampliar as datas ou remover algumas palavras-chave.")
+            if not df_final.empty:
+                # Criação dos Cards de Métricas
+                valor_total = df_final["Valor Estimado"].sum()
+                
+                m1, m2 = st.columns(2)
+                m1.metric("Oportunidades Encontradas", f"{len(df_final)} editais")
+                m2.metric("Volume Financeiro Total", f"R$ {valor_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                
+                st.write("### Lista de Processos")
+                
+                # Formatação elegante da tabela
+                st.dataframe(
+                    df_final.style.format({"Valor Estimado": "R$ {:,.2f}"}),
+                    use_container_width=True,
+                    height=400
+                )
+                
+                st.download_button(
+                    label="📥 Exportar Dados para Excel",
+                    data=df_final.to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig'),
+                    file_name="prospeccao_escritorio.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("Nenhuma licitação encontrada com estes critérios. Tente remover algumas palavras-chave ou alterar as datas para o ano de 2023/2024.")
+    else:
+        # Tela inicial de espera
+        st.caption("👈 Configure os parâmetros ao lado e clique em Mapear Oportunidades para iniciar.")
