@@ -19,7 +19,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- TRADUTOR DE CÓDIGOS DO GOVERNO ---
-# O Governo agora exige o código numérico exato de cada modalidade
 MAPA_MODALIDADES = {
     "Leilão": 1,
     "Diálogo Competitivo": 2,
@@ -28,67 +27,87 @@ MAPA_MODALIDADES = {
     "Pregão Eletrônico": 6
 }
 
-# --- 2. MOTOR DE BUSCA INTELIGENTE ---
+# --- 2. MOTOR DE BUSCA (COM FATIADOR DE DATAS) ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
-    str_inicio = data_inicio.strftime("%Y%m%d")
-    str_fim = data_fim.strftime("%Y%m%d")
-    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Accept": "application/json"
     }
     
     todos_resultados = []
     erros = []
     
-    # Se você deixar vazio, o robô busca as principais por padrão
     if not modalidades_selecionadas:
-        modalidades_selecionadas = ["Concorrência", "Leilão", "Diálogo Competitivo", "Pregão Eletrônico"]
+        modalidades_selecionadas = ["Concorrência", "Leilão", "Diálogo Competitivo"]
+        
+    # FATIADOR: Quebra o período grande em pedaços de 30 dias
+    chunks = []
+    atual = data_inicio
+    while atual <= data_fim:
+        proximo = atual + timedelta(days=30)
+        if proximo > data_fim:
+            proximo = data_fim
+        chunks.append((atual, proximo))
+        atual = proximo + timedelta(days=1)
         
     for modalidade in modalidades_selecionadas:
         codigo = MAPA_MODALIDADES.get(modalidade)
-        if not codigo:
-            continue
+        if not codigo: continue
             
-        # Agora estamos enviando a chave que o governo exigiu (&codigoModalidadeContratacao=X)
-        url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
-        
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                dados = response.json().get("data", [])
-                todos_resultados.extend(dados)
-            else:
-                erros.append(f"{modalidade}: Erro {response.status_code}")
-        except Exception as e:
-            erros.append(f"{modalidade}: Falha na conexão")
+        for inicio_chunk, fim_chunk in chunks:
+            str_inicio = inicio_chunk.strftime("%Y%m%d")
+            str_fim = fim_chunk.strftime("%Y%m%d")
             
-        # Pequena pausa para o governo não achar que somos um ataque hacker (DDoS)
-        time.sleep(0.5)
-        
-    return todos_resultados, erros
+            url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
+            
+            try:
+                response = requests.get(url, headers=headers, timeout=30)
+                if response.status_code == 200:
+                    dados = response.json().get("data", [])
+                    todos_resultados.extend(dados)
+                else:
+                    erros.append(f"{modalidade} (bloco {str_inicio}): Erro {response.status_code}")
+            except requests.exceptions.Timeout:
+                erros.append(f"{modalidade} (bloco {str_inicio}): O Governo demorou muito a responder (Timeout)")
+            except Exception as e:
+                erros.append(f"{modalidade} (bloco {str_inicio}): Falha de conexão")
+                
+            time.sleep(1)
+            
+    return todos_resultados, list(set(erros))
 
-def filtrar_palavras(licitacoes, palavras_chave):
+def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
     if not licitacoes: return pd.DataFrame()
         
     resultados = []
     lista_palavras = [p.strip().lower() for p in palavras_chave.split(',')] if palavras_chave else []
+    ids_adicionados = set()
     
     for lic in licitacoes:
+        id_unico = lic.get("id") or lic.get("linkSistemaOrigem")
+        if id_unico in ids_adicionados:
+            continue
+            
         objeto = str(lic.get("objeto", "")).lower()
         valor = lic.get("valorTotalEstimado") or 0.0 
         
         passou_palavra = any(p in objeto for p in lista_palavras) if (lista_palavras and lista_palavras[0] != "") else True
+        passou_valor = (valor_min <= valor <= valor_max)
         
-        if passou_palavra:
+        if passou_palavra and passou_valor:
+            # Pegando o link com segurança, caso venha vazio da API do governo
+            link_original = lic.get("linkSistemaOrigem", "")
+            
             resultados.append({
                 "Órgão": lic.get("orgaoEntidade", {}).get("razaoSocial", "N/A"),
                 "Modalidade": lic.get("modalidadeNome", "N/A"),
                 "Objeto": lic.get("objeto"),
                 "Valor Estimado": valor,
-                "Link": lic.get("linkSistemaOrigem")
+                "Data Publicação": lic.get("dataPublicacaoPncp"),
+                "Link": link_original if link_original else "Sem Link"
             })
+            ids_adicionados.add(id_unico)
             
     return pd.DataFrame(resultados)
 
@@ -103,8 +122,12 @@ with col_filtros:
     st.subheader("🎯 Parâmetros")
     
     hoje = datetime.now()
-    data_inicio = st.date_input("De (Data Inicial):", value=hoje)
+    data_inicio = st.date_input("De (Data Inicial):", value=hoje - timedelta(days=30))
     data_fim = st.date_input("Até (Data Final):", value=hoje)
+    
+    if data_inicio > data_fim:
+        st.warning("⚠️ Detectamos datas invertidas. O sistema ajustou a ordem automaticamente para buscar!")
+        data_inicio, data_fim = data_fim, data_inicio
     
     palavras_chave = st.text_input("Palavras-chave (vírgula):", "")
     
@@ -114,30 +137,47 @@ with col_filtros:
         default=["Concorrência", "Leilão"]
     )
     
+    st.subheader("💰 Filtro Financeiro")
+    valor_min = st.number_input("Valor Mínimo (R$):", min_value=0.0, value=0.0, step=100000.0)
+    valor_max = st.number_input("Valor Máximo (R$):", min_value=0.0, value=5000000000.0, step=100000.0)
+    
     buscar = st.button("🔍 Mapear Oportunidades")
 
 with col_resultados:
     if buscar:
-        with st.spinner("Buscando dados nos servidores do Governo..."):
+        with st.spinner("Varrendo os servidores do Governo (pode levar alguns segundos em períodos longos)..."):
             dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
             
             if erros:
-                st.warning(f"Alguns alertas durante a busca: {', '.join(erros)}")
+                st.warning(f"Alguns blocos de data falharam devido a instabilidade do governo: {', '.join(erros)}")
                 
             if len(dados_brutos) > 0:
-                st.success(f"Sucesso! O governo liberou {len(dados_brutos)} licitações brutas nas modalidades selecionadas.")
-                
-                df_final = filtrar_palavras(dados_brutos, palavras_chave)
+                df_final = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max)
                 
                 if not df_final.empty:
+                    st.success(f"Sucesso! Encontramos {len(df_final)} licitação(ões) dentro dos seus critérios.")
+                    
                     valor_total = df_final["Valor Estimado"].sum()
                     m1, m2 = st.columns(2)
                     m1.metric("Encontradas (com filtro)", f"{len(df_final)}")
                     m2.metric("Volume Financeiro", f"R$ {valor_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
                     
-                    st.dataframe(df_final.style.format({"Valor Estimado": "R$ {:,.2f}"}), use_container_width=True)
+                    if "Data Publicação" in df_final.columns:
+                        df_final = df_final.sort_values(by="Data Publicação", ascending=False)
+                        
+                    # Configuração para transformar o texto da coluna 'Link' em um botão clicável
+                    st.dataframe(
+                        df_final.style.format({"Valor Estimado": "R$ {:,.2f}"}), 
+                        use_container_width=True,
+                        column_config={
+                            "Link": st.column_config.LinkColumn(
+                                "Acesso ao Edital",
+                                display_text="Acessar Edital 🔗"
+                            )
+                        }
+                    )
                 else:
-                    st.warning("O governo retornou dados, mas nenhuma passou nos seus filtros de Palavras-chave. Tente apagar a palavra-chave.")
+                    st.warning("O governo retornou dados, mas nenhuma licitação bateu com os seus filtros de Valor ou Palavras-chave.")
             else:
                 if not erros:
                     st.info("Nenhuma licitação publicada neste período para estas modalidades.")
