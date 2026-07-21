@@ -3,14 +3,19 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 import time
+import os
 
-# --- 1. CONFIGURAÇÃO VISUAL E MEMÓRIA (CORES DO ESCRITÓRIO) ---
+# --- 1. CONFIGURAÇÃO VISUAL E MEMÓRIA ---
 st.set_page_config(page_title="Radar de Infraestrutura | A/S", page_icon="⚖️", layout="wide")
 
-# Injetando as cores do seu logotipo (Verde Petróleo Escuro: #2a4f54)
 st.markdown("""
     <style>
-    /* Botões principais com a cor do escritório */
+    /* Esconde o menu padrão e o rodapé do Streamlit para um visual de App próprio */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Botões principais com efeito de zoom ao passar o mouse */
     .stButton>button { 
         width: 100%; 
         border-radius: 8px; 
@@ -19,33 +24,31 @@ st.markdown("""
         color: white; 
         height: 3em;
         border: none;
+        transition: all 0.3s ease;
     }
     .stButton>button:hover { 
-        background-color: #1b3337; /* Tom mais escuro para o efeito de passar o mouse */
+        background-color: #1b3337; 
         color: white;
+        transform: scale(1.02);
     }
     
-    /* Cor dos números de destaque (Métricas) */
-    div[data-testid="stMetricValue"] { 
-        color: #2a4f54; 
-        font-size: 2.2rem; 
-        font-weight: 800;
-    }
-    
-    /* Cor do Título Principal */
-    h1 {
-        color: #2a4f54 !important;
-    }
-    
-    /* Linha divisória com a cor do escritório */
-    hr {
-        border-bottom-color: #2a4f54 !important;
-    }
+    div[data-testid="stMetricValue"] { color: #2a4f54; font-size: 2.2rem; font-weight: 800; }
+    h1, h2, h3 { color: #2a4f54 !important; }
+    hr { border-bottom-color: #2a4f54 !important; }
     </style>
 """, unsafe_allow_html=True)
 
 if 'licitacoes_salvas' not in st.session_state:
     st.session_state['licitacoes_salvas'] = pd.DataFrame()
+
+# --- INSERINDO A LOGO NA BARRA LATERAL ---
+with st.sidebar:
+    # O código verifica se a imagem existe para não quebrar o site caso o nome esteja diferente
+    if os.path.exists("asa_logobrasao_verde.png"):
+        st.image("asa_logobrasao_verde.png", use_column_width=True)
+    else:
+        st.markdown("<h2 style='text-align: center; color: #2a4f54;'>A/S ADVOGADOS</h2>", unsafe_allow_html=True)
+    st.markdown("---")
 
 # --- TRADUTOR DE CÓDIGOS DO GOVERNO ---
 MAPA_MODALIDADES = {
@@ -56,7 +59,7 @@ MAPA_MODALIDADES = {
     "Pregão Eletrônico": 6
 }
 
-# --- 2. MOTOR DE BUSCA (COM INSISTÊNCIA AUTOMÁTICA E FATIADOR) ---
+# --- 2. MOTOR DE BUSCA ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
     headers = {
@@ -185,7 +188,7 @@ with aba_busca:
 
     with col_resultados:
         if buscar:
-            with st.spinner("Varrendo os servidores do Governo (com tentativas automáticas em caso de erro)..."):
+            with st.spinner("Varrendo os servidores do Governo..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
                 
                 if erros:
