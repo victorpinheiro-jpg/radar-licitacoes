@@ -4,20 +4,50 @@ import requests
 from datetime import datetime, timedelta
 import time
 
-# --- 1. CONFIGURAÇÃO VISUAL E MEMÓRIA ---
-st.set_page_config(page_title="Radar de Infraestrutura", page_icon="⚖️", layout="wide")
+# --- 1. CONFIGURAÇÃO VISUAL E MEMÓRIA (CORES DO ESCRITÓRIO) ---
+st.set_page_config(page_title="Radar de Infraestrutura | A/S", page_icon="⚖️", layout="wide")
 
+# Injetando as cores do seu logotipo (Verde Petróleo Escuro: #2a4f54)
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; background-color: #1E3A8A; color: white; height: 3em; }
-    .stButton>button:hover { background-color: #1e40af; }
-    div[data-testid="stMetricValue"] { color: #1E3A8A; font-size: 2rem; }
+    /* Botões principais com a cor do escritório */
+    .stButton>button { 
+        width: 100%; 
+        border-radius: 8px; 
+        font-weight: bold; 
+        background-color: #2a4f54; 
+        color: white; 
+        height: 3em;
+        border: none;
+    }
+    .stButton>button:hover { 
+        background-color: #1b3337; /* Tom mais escuro para o efeito de passar o mouse */
+        color: white;
+    }
+    
+    /* Cor dos números de destaque (Métricas) */
+    div[data-testid="stMetricValue"] { 
+        color: #2a4f54; 
+        font-size: 2.2rem; 
+        font-weight: 800;
+    }
+    
+    /* Cor do Título Principal */
+    h1 {
+        color: #2a4f54 !important;
+    }
+    
+    /* Linha divisória com a cor do escritório */
+    hr {
+        border-bottom-color: #2a4f54 !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 if 'licitacoes_salvas' not in st.session_state:
     st.session_state['licitacoes_salvas'] = pd.DataFrame()
 
+# --- TRADUTOR DE CÓDIGOS DO GOVERNO ---
 MAPA_MODALIDADES = {
     "Leilão": 1, 
     "Diálogo Competitivo": 2, 
@@ -26,7 +56,7 @@ MAPA_MODALIDADES = {
     "Pregão Eletrônico": 6
 }
 
-# --- 2. MOTOR DE BUSCA ---
+# --- 2. MOTOR DE BUSCA (COM INSISTÊNCIA AUTOMÁTICA E FATIADOR) ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
     headers = {
@@ -106,9 +136,8 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
         if passou_palavra and passou_valor:
             link_original = lic.get("linkSistemaOrigem", "")
             
-            # CORREÇÃO DEFINITIVA DOS LINKS
             if not link_original or str(link_original).strip() == "":
-                link_final = None # Deixa vazio para o Streamlit não criar link falso
+                link_final = None 
             elif not link_original.startswith("http"):
                 link_final = "https://" + link_original
             else:
@@ -169,7 +198,7 @@ with aba_busca:
                         df_final.insert(0, "Acompanhar", False)
                         
                         st.write("### 📌 Resultados da Busca")
-                        st.caption("Marque a caixinha 'Acompanhar' nas licitações desejadas e clique no botão azul abaixo da tabela.")
+                        st.caption("Marque a caixinha 'Acompanhar' nas licitações desejadas e clique no botão abaixo da tabela.")
                         
                         valor_total = df_final["Valor Estimado"].sum()
                         m1, m2 = st.columns(2)
@@ -195,7 +224,6 @@ with aba_busca:
                             selecionadas = selecionadas.drop(columns=["Acompanhar"])
                             
                             if not selecionadas.empty:
-                                # Garantimos que não vai duplicar se você salvar a mesma licitação de novo
                                 st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Objeto"])
                                 st.success("Licitações salvas com sucesso! Vá para a aba 'Licitações de Interesse' no topo.")
                             else:
@@ -209,7 +237,7 @@ with aba_busca:
 
 with aba_interesse:
     st.subheader("⭐ Seu Painel de Acompanhamento")
-    st.markdown("Aqui ficam as licitações que o escritório decidiu monitorar. *(Aviso: nesta versão, se você fechar a aba do navegador, esta lista será limpa).*")
+    st.markdown("Aqui ficam as licitações que o escritório decidiu monitorar.")
     
     if st.session_state['licitacoes_salvas'].empty:
         st.info("Você ainda não salvou nenhuma licitação de interesse.")
