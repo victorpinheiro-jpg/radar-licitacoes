@@ -5,49 +5,58 @@ from datetime import datetime, timedelta
 import time
 import os
 
-# --- 1. CONFIGURAÇÃO VISUAL E MEMÓRIA ---
+# --- 1. CONFIGURAÇÃO VISUAL E MEMÓRIA (PALETA PASTEL/SÓBRIA) ---
 st.set_page_config(page_title="Radar de Infraestrutura | A/S", page_icon="⚖️", layout="wide")
 
 st.markdown("""
     <style>
-    /* Esconde o menu padrão e o rodapé do Streamlit para um visual de App próprio */
+    /* Esconde o menu padrão e ajusta o respiro do topo */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+    .block-container { padding-top: 2rem; }
     
-    /* Botões principais com efeito de zoom ao passar o mouse */
+    /* Botões: Verde/Azul Pastel Muted (#6a9094) */
     .stButton>button { 
         width: 100%; 
         border-radius: 8px; 
-        font-weight: bold; 
-        background-color: #2a4f54; 
+        font-weight: 500; 
+        background-color: #6a9094; 
         color: white; 
         height: 3em;
         border: none;
         transition: all 0.3s ease;
     }
     .stButton>button:hover { 
-        background-color: #1b3337; 
+        background-color: #55787c; 
         color: white;
-        transform: scale(1.02);
     }
     
-    div[data-testid="stMetricValue"] { color: #2a4f54; font-size: 2.2rem; font-weight: 800; }
-    h1, h2, h3 { color: #2a4f54 !important; }
-    hr { border-bottom-color: #2a4f54 !important; }
+    /* Textos, Títulos e Métricas: Tom pastel mais escuro/acinzentado para leitura suave (#436468) */
+    div[data-testid="stMetricValue"] { color: #436468; font-size: 2.2rem; font-weight: 700; }
+    h1, h2, h3, h4, h5, h6 { color: #436468 !important; font-weight: 600; }
+    
+    /* Linha divisória bem suave */
+    hr { border-bottom-color: #6a9094 !important; opacity: 0.3; }
     </style>
 """, unsafe_allow_html=True)
 
 if 'licitacoes_salvas' not in st.session_state:
     st.session_state['licitacoes_salvas'] = pd.DataFrame()
 
-# --- INSERINDO A LOGO NA BARRA LATERAL ---
+# --- INSERINDO A LOGO COM ELEGÂNCIA (MENOR E CENTRALIZADA) ---
 with st.sidebar:
-    # O código verifica se a imagem existe para não quebrar o site caso o nome esteja diferente
-    if os.path.exists("asa_logobrasao_verde.png"):
-        st.image("asa_logobrasao_verde.png", use_column_width=True)
-    else:
-        st.markdown("<h2 style='text-align: center; color: #2a4f54;'>A/S ADVOGADOS</h2>", unsafe_allow_html=True)
+    st.write("") # Dá um pequeno espaço no topo
+    
+    # Criamos 3 colunas e colocamos a logo na coluna do meio para ela ficar menor e centralizada
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if os.path.exists("asa_logobrasao_verde.png"):
+            st.image("asa_logobrasao_verde.png", use_column_width=True)
+        else:
+            st.markdown("<h3 style='text-align: center; color: #436468;'>A/S</h3>", unsafe_allow_html=True)
+            
+    st.write("") # Dá um espaço em baixo da logo
     st.markdown("---")
 
 # --- TRADUTOR DE CÓDIGOS DO GOVERNO ---
@@ -263,4 +272,5 @@ with aba_interesse:
         
         if st.button("🗑️ Limpar Lista de Interesse"):
             st.session_state['licitacoes_salvas'] = pd.DataFrame()
+            st.rerun()()
             st.rerun()
