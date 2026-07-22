@@ -7,6 +7,10 @@ import os
 import io
 import re
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+try:
+    from openpyxl.drawing.image import Image as ExcelImage
+except ImportError:
+    ExcelImage = None
 
 # --- 1. CONFIGURAÇÃO VISUAL E IDENTIDADE ASA ---
 st.set_page_config(page_title="ASA | Radar de Infraestrutura", page_icon="⚖️", layout="wide")
@@ -35,7 +39,7 @@ MAPA_MODALIDADES = {
 }
 LISTA_UFS = ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 
-# --- FUNÇÃO DE ESTILIZAÇÃO DO EXCEL ---
+# --- FUNÇÃO DE ESTILIZAÇÃO DO EXCEL (COM LOGO) ---
 def aplicar_estilo_excel(writer, df, sheet_name):
     worksheet = writer.sheets[sheet_name]
     
@@ -43,7 +47,8 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     fonte_branca = Font(color="FFFFFF", bold=True)
     borda_fina = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
     
-    # 1. Pintar Cabeçalho
+    # 1. Pintar Cabeçalho e aumentar a altura da linha 1 para caber a logo
+    worksheet.row_dimensions[1].height = 45
     for cell in worksheet[1]:
         cell.fill = cor_asa
         cell.font = fonte_branca
@@ -55,7 +60,6 @@ def aplicar_estilo_excel(writer, df, sheet_name):
         col_letter = col[0].column_letter
         col_name = col[0].value
         
-        # Ajustar a largura de acordo com o tipo da coluna
         if col_name == "Objeto":
             worksheet.column_dimensions[col_letter].width = 65
         elif col_name in ["Link", "Órgão"]:
@@ -67,18 +71,32 @@ def aplicar_estilo_excel(writer, df, sheet_name):
         else:
             worksheet.column_dimensions[col_letter].width = 18
             
-        # Formatar as células de baixo (ignorando a linha 1 do cabeçalho)
         for cell in col[1:]:
             cell.border = borda_fina
-            # Se for Objeto, quebra o texto para baixo. Se não, alinha no topo.
             if col_name == "Objeto":
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
             else:
                 cell.alignment = Alignment(vertical="top")
                 
-            # Formatação visual de R$
             if col_name == "Valor Estimado" and isinstance(cell.value, (int, float)):
                 cell.number_format = 'R$ #,##0.00'
+
+    # 3. Adicionar a Logo no cantinho (Coluna J - Logo após o link)
+    if ExcelImage is not None and os.path.exists("asa_logobrasao_verde.png"):
+        try:
+            img = ExcelImage("asa_logobrasao_verde.png")
+            img.height = 50 # Altura ajustada
+            img.width = 50  # Largura ajustada
+            
+            # Pinta a célula J1 de verde para dar continuidade ao cabeçalho
+            worksheet['J1'].fill = cor_asa
+            worksheet['J1'].border = borda_fina
+            worksheet.column_dimensions['J'].width = 10
+            
+            # Insere a imagem flutuando na célula J1
+            worksheet.add_image(img, 'J1')
+        except Exception as e:
+            pass # Se a imagem falhar, a planilha gera normalmente sem travar
 
 # --- 2. MOTOR DE BUSCA E FILTROS ---
 @st.cache_data(ttl=300)
@@ -264,7 +282,7 @@ with aba_interesse:
         buffer_exp = io.BytesIO()
         with pd.ExcelWriter(buffer_exp, engine='openpyxl') as writer:
             df_export.to_excel(writer, index=False, sheet_name='Base ASA')
-            aplicar_estilo_excel(writer, df_export, 'Base ASA') # Aqui aplicamos o estilo de beleza
+            aplicar_estilo_excel(writer, df_export, 'Base ASA')
             
         st.download_button(
             label="📥 Baixar Planilha Mestre Atualizada (.xlsx)",
@@ -322,7 +340,7 @@ with aba_rastreador:
                     buffer_rastreio = io.BytesIO()
                     with pd.ExcelWriter(buffer_rastreio, engine='openpyxl') as writer:
                         df_rastrear.to_excel(writer, index=False, sheet_name='Base Atualizada ASA')
-                        aplicar_estilo_excel(writer, df_rastrear, 'Base Atualizada ASA') # Aplicando beleza aqui também!
+                        aplicar_estilo_excel(writer, df_rastrear, 'Base Atualizada ASA')
                     
                     st.download_button(
                         label="📥 Baixar Planilha com Status Atualizado (.xlsx)",
