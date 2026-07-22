@@ -7,10 +7,6 @@ import os
 import io
 import re
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-try:
-    from openpyxl.drawing.image import Image as ExcelImage
-except ImportError:
-    ExcelImage = None
 
 # --- 1. CONFIGURAÇÃO VISUAL E IDENTIDADE ASA ---
 st.set_page_config(page_title="ASA | Radar de Infraestrutura", page_icon="⚖️", layout="wide")
@@ -39,64 +35,106 @@ MAPA_MODALIDADES = {
 }
 LISTA_UFS = ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 
-# --- FUNÇÃO DE ESTILIZAÇÃO DO EXCEL (COM LOGO) ---
+# --- CÁLCULO DE DIAS RESTANTES ---
+def calcular_dias_restantes(data_sessao_str):
+    if not data_sessao_str or data_sessao_str == "Verificar Edital":
+        return "N/A"
+    try:
+        dt_sessao = datetime.strptime(data_sessao_str, '%d/%m/%Y %H:%M')
+        hoje = datetime.now()
+        delta = (dt_sessao.date() - hoje.date()).days
+        if delta < 0: return "Sessão Encerrada"
+        elif delta == 0: return "🚨 É HOJE!"
+        else: return f"Faltam {delta} dias"
+    except:
+        return "N/A"
+
+# --- FUNÇÃO DE ESTILIZAÇÃO DO EXCEL (Layout Premium + Alertas) ---
 def aplicar_estilo_excel(writer, df, sheet_name):
     worksheet = writer.sheets[sheet_name]
     
+    # Paleta de Cores
     cor_asa = PatternFill(start_color="436468", end_color="436468", fill_type="solid")
-    fonte_branca = Font(color="FFFFFF", bold=True)
-    borda_fina = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+    cor_fundo_claro = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
+    cor_suspensa = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid") # Amarelo Alerta
+    cor_morta = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid") # Cinza Inativo
     
-    # 1. Pintar Cabeçalho e aumentar a altura da linha 1 para caber a logo
-    worksheet.row_dimensions[1].height = 45
+    fonte_branca = Font(color="FFFFFF", bold=True)
+    fonte_normal = Font(name="Calibri", size=11)
+    fonte_urgente = Font(name="Calibri", size=11, color="FF0000", bold=True) # Texto Vermelho
+    
+    borda_fina = Border(left=Side(style='thin', color="BFBFBF"), right=Side(style='thin', color="BFBFBF"), 
+                        top=Side(style='thin', color="BFBFBF"), bottom=Side(style='thin', color="BFBFBF"))
+    
+    # Cabeçalho
+    worksheet.row_dimensions[1].height = 30
+    col_indices = {cell.value: idx + 1 for idx, cell in enumerate(worksheet[1])}
+    status_col_idx = col_indices.get("Status/Fase")
+    dias_col_idx = col_indices.get("Dias Restantes")
+
     for cell in worksheet[1]:
         cell.fill = cor_asa
         cell.font = fonte_branca
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = borda_fina
         
-    # 2. Arrumar Larguras e Formatos das Colunas
+    # Larguras das Colunas
     for col in worksheet.columns:
         col_letter = col[0].column_letter
         col_name = col[0].value
         
-        if col_name == "Objeto":
-            worksheet.column_dimensions[col_letter].width = 65
-        elif col_name in ["Link", "Órgão"]:
-            worksheet.column_dimensions[col_letter].width = 45
-        elif col_name == "Status/Fase":
-            worksheet.column_dimensions[col_letter].width = 25
-        elif col_name == "Valor Estimado":
-            worksheet.column_dimensions[col_letter].width = 22
-        else:
-            worksheet.column_dimensions[col_letter].width = 18
+        if col_name == "Objeto": worksheet.column_dimensions[col_letter].width = 65
+        elif col_name == "Órgão": worksheet.column_dimensions[col_letter].width = 40
+        elif col_name == "Link": worksheet.column_dimensions[col_letter].width = 35
+        elif col_name == "Anotações Equipe": worksheet.column_dimensions[col_letter].width = 45
+        elif col_name in ["Status/Fase", "Última Atualização", "Data da Sessão", "Dias Restantes"]: worksheet.column_dimensions[col_letter].width = 20
+        elif col_name == "Valor Estimado": worksheet.column_dimensions[col_letter].width = 22
+        else: worksheet.column_dimensions[col_letter].width = 16
             
-        for cell in col[1:]:
+    # Formatação Linha a Linha (Cores Dinâmicas)
+    for row_idx in range(2, worksheet.max_row + 1):
+        # Lê o status para decidir a cor da linha
+        status_val = str(worksheet.cell(row=row_idx, column=status_col_idx).value).lower() if status_col_idx else ""
+        dias_val = str(worksheet.cell(row=row_idx, column=dias_col_idx).value) if dias_col_idx else ""
+        
+        # Decide a cor de fundo (Semáforo)
+        fundo_linha = PatternFill(fill_type=None)
+        if row_idx % 2 == 0: fundo_linha = cor_fundo_claro
+        
+        if "suspen" in status_val: fundo_linha = cor_suspensa
+        elif any(x in status_val for x in ["homolog", "revogad", "cancelad", "fracassad", "desert"]): fundo_linha = cor_morta
+
+        for col_idx in range(1, worksheet.max_column + 1):
+            cell = worksheet.cell(row=row_idx, column=col_idx)
+            col_name = worksheet.cell(row=1, column=col_idx).value
+            
+            cell.fill = fundo_linha
             cell.border = borda_fina
-            if col_name == "Objeto":
+            cell.font = fonte_normal
+            
+            # Alertas em Vermelho para prazos curtos
+            if col_name == "Dias Restantes":
+                if "HOJE" in dias_val: cell.font = fonte_urgente
+                elif "Faltam" in dias_val:
+                    try:
+                        num = int(re.search(r'\d+', dias_val).group())
+                        if num <= 5: cell.font = fonte_urgente # Faltam 5 dias ou menos = Vermelho!
+                    except: pass
+
+            if col_name in ["Objeto", "Anotações Equipe"]:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
+                texto_len = len(str(cell.value)) if cell.value else 0
+                linhas_estimadas = max(1, (texto_len // 60) + 1)
+                if worksheet.row_dimensions[row_idx].height is None or worksheet.row_dimensions[row_idx].height < linhas_estimadas * 15:
+                    worksheet.row_dimensions[row_idx].height = linhas_estimadas * 15
             else:
                 cell.alignment = Alignment(vertical="top")
                 
             if col_name == "Valor Estimado" and isinstance(cell.value, (int, float)):
                 cell.number_format = 'R$ #,##0.00'
 
-    # 3. Adicionar a Logo no cantinho (Coluna J - Logo após o link)
-    if ExcelImage is not None and os.path.exists("asa_logobrasao_verde.png"):
-        try:
-            img = ExcelImage("asa_logobrasao_verde.png")
-            img.height = 50 # Altura ajustada
-            img.width = 50  # Largura ajustada
-            
-            # Pinta a célula J1 de verde para dar continuidade ao cabeçalho
-            worksheet['J1'].fill = cor_asa
-            worksheet['J1'].border = borda_fina
-            worksheet.column_dimensions['J'].width = 10
-            
-            # Insere a imagem flutuando na célula J1
-            worksheet.add_image(img, 'J1')
-        except Exception as e:
-            pass # Se a imagem falhar, a planilha gera normalmente sem travar
+    worksheet.freeze_panes = 'A2'
+    worksheet.auto_filter.ref = worksheet.dimensions
 
 # --- 2. MOTOR DE BUSCA E FILTROS ---
 @st.cache_data(ttl=300)
@@ -166,16 +204,28 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
 
             identificacao = f"{numero_compra}/{ano_compra}" if numero_compra and ano_compra else str(id_unico)
             fase = lic.get("situacaoCompraNome", "Não informada")
+            
+            dt_att = lic.get("dataAtualizacaoPncp")
+            data_atualizacao_str = datetime.fromisoformat(dt_att[:19]).strftime('%d/%m/%Y %H:%M') if dt_att else "Não informada"
+
+            dt_sessao = lic.get("dataAberturaProposta")
+            data_sessao_str = datetime.fromisoformat(dt_sessao[:19]).strftime('%d/%m/%Y %H:%M') if dt_sessao else "Verificar Edital"
+
+            dias_restantes = calcular_dias_restantes(data_sessao_str)
 
             resultados.append({
                 "Identificação": identificacao,
                 "Status/Fase": fase,
+                "Dias Restantes": dias_restantes,
+                "Data da Sessão": data_sessao_str,
+                "Última Atualização": data_atualizacao_str,
+                "Anotações Equipe": "",  # <--- COLUNA PARA CRM MANUAL
                 "UF": uf_licitacao,
                 "Órgão": lic.get("orgaoEntidade", {}).get("razaoSocial", "N/A"),
                 "Modalidade": lic.get("modalidadeNome", "N/A"),
                 "Objeto": objeto,
                 "Valor Estimado": valor,
-                "Data Publicação": lic.get("dataPublicacaoPncp"),
+                "Data Publicação": lic.get("dataPublicacaoPncp")[:10] if lic.get("dataPublicacaoPncp") else "",
                 "Link": link_final
             })
             ids_adicionados.add(id_unico)
@@ -238,12 +288,10 @@ with aba_busca:
                 m1.metric("Encontradas (com filtro)", f"{len(df_atual)}")
                 m2.metric("Volume Financeiro", f"R$ {df_atual['Valor Estimado'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
                 
-                if "Data Publicação" in df_atual.columns: df_atual = df_atual.sort_values(by="Data Publicação", ascending=False)
-                
                 df_editado = st.data_editor(
                     df_atual,
                     column_config={"Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False), "Link": st.column_config.LinkColumn("Edital", display_text="Acessar 🔗")},
-                    disabled=["Identificação", "Status/Fase", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação"],
+                    disabled=["Identificação", "Status/Fase", "Dias Restantes", "Data da Sessão", "Última Atualização", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação", "Anotações Equipe"],
                     hide_index=True, use_container_width=True, key="editor_resultados"
                 )
                 
@@ -256,7 +304,7 @@ with aba_busca:
             else: st.warning("Nenhuma licitação passou nos filtros.")
 
 # ==========================================
-# ABA 2: UNIFICADOR DE INTERESSES (Upload da Base)
+# ABA 2: UNIFICADOR DE INTERESSES
 # ==========================================
 with aba_interesse:
     st.subheader("⭐ Seu Painel de Acompanhamento (Unificador)")
@@ -300,7 +348,7 @@ with aba_interesse:
 # ==========================================
 with aba_rastreador:
     st.subheader("📈 Rastreador de Status via Planilha")
-    st.markdown("Suba sua Planilha Mestre aqui. O robô vai ler a coluna **Link**, consultar o governo para descobrir a fase atual de cada processo e te devolver um Excel novinho.")
+    st.markdown("Suba sua Planilha Mestre. O robô atualizará Fases, Prazos e Datas, **preservando todas as Anotações da Equipe**.")
     
     arquivo_rastreio = st.file_uploader("📂 Upload da Planilha para Rastreio (.xlsx)", type=["xlsx"], key="up_rastreio")
     
@@ -308,14 +356,19 @@ with aba_rastreador:
         try:
             df_rastrear = pd.read_excel(arquivo_rastreio)
             if "Link" not in df_rastrear.columns:
-                st.error("❌ A planilha enviada não possui uma coluna chamada 'Link'. Verifique o arquivo e tente novamente.")
+                st.error("❌ A planilha enviada não possui uma coluna chamada 'Link'.")
             else:
                 if st.button("🔄 Rastrear e Atualizar Todos os Status"):
                     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
                     progresso = st.progress(0)
                     total = len(df_rastrear)
                     
-                    with st.spinner("Lendo banco de dados do Governo..."):
+                    if "Última Atualização" not in df_rastrear.columns: df_rastrear["Última Atualização"] = ""
+                    if "Data da Sessão" not in df_rastrear.columns: df_rastrear["Data da Sessão"] = ""
+                    if "Dias Restantes" not in df_rastrear.columns: df_rastrear["Dias Restantes"] = ""
+                    if "Anotações Equipe" not in df_rastrear.columns: df_rastrear["Anotações Equipe"] = ""
+
+                    with st.spinner("Consultando servidores do Governo..."):
                         for index, row in df_rastrear.iterrows():
                             link = str(row["Link"]).strip()
                             try:
@@ -328,14 +381,21 @@ with aba_rastreador:
                                     if resp.status_code == 200:
                                         dados_lic = resp.json()
                                         df_rastrear.at[index, "Status/Fase"] = dados_lic.get("situacaoCompraNome", "Não informada")
+                                        
+                                        dt_att = dados_lic.get("dataAtualizacaoPncp")
+                                        if dt_att: df_rastrear.at[index, "Última Atualização"] = datetime.fromisoformat(dt_att[:19]).strftime('%d/%m/%Y %H:%M')
+                                        
+                                        dt_sessao = dados_lic.get("dataAberturaProposta")
+                                        if dt_sessao: 
+                                            sessao_formatada = datetime.fromisoformat(dt_sessao[:19]).strftime('%d/%m/%Y %H:%M')
+                                            df_rastrear.at[index, "Data da Sessão"] = sessao_formatada
+                                            df_rastrear.at[index, "Dias Restantes"] = calcular_dias_restantes(sessao_formatada)
                                 time.sleep(0.5) 
                             except:
                                 pass
-                            
                             progresso.progress((index + 1) / total)
                     
-                    st.success("✅ Varredura concluída! Confira abaixo os status atualizados.")
-                    st.dataframe(df_rastrear.style.format({"Valor Estimado": "R$ {:,.2f}"}), hide_index=True, use_container_width=True)
+                    st.success("✅ Rastreamento concluído! Baixe a planilha atualizada abaixo.")
                     
                     buffer_rastreio = io.BytesIO()
                     with pd.ExcelWriter(buffer_rastreio, engine='openpyxl') as writer:
@@ -343,9 +403,9 @@ with aba_rastreador:
                         aplicar_estilo_excel(writer, df_rastrear, 'Base Atualizada ASA')
                     
                     st.download_button(
-                        label="📥 Baixar Planilha com Status Atualizado (.xlsx)",
+                        label="📥 Baixar Planilha Inteligente Atualizada (.xlsx)",
                         data=buffer_rastreio.getvalue(),
-                        file_name=f"Master_ASA_Atualizada_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+                        file_name=f"Master_ASA_Rastreada_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
         except Exception as e:
