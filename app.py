@@ -6,7 +6,8 @@ import time
 import os
 
 # --- 1. CONFIGURAÇÃO VISUAL E MEMÓRIA (PALETA PASTEL/SÓBRIA) ---
-st.set_page_config(page_title="Radar de Infraestrutura | A/S", page_icon="⚖️", layout="wide")
+# Título da aba do navegador alterado para ASA
+st.set_page_config(page_title="ASA | Radar de Infraestrutura", page_icon="⚖️", layout="wide")
 
 st.markdown("""
     <style>
@@ -32,7 +33,7 @@ st.markdown("""
         color: white;
     }
     
-    /* Textos, Títulos e Métricas: Tom pastel mais escuro/acinzentado para leitura suave (#436468) */
+    /* Textos, Títulos e Métricas */
     div[data-testid="stMetricValue"] { color: #436468; font-size: 2.2rem; font-weight: 700; }
     h1, h2, h3, h4, h5, h6 { color: #436468 !important; font-weight: 600; }
     
@@ -154,17 +155,19 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
 
 # --- 3. FRONTEND E ABAS ---
 
-# Cabeçalho Principal Integrado (Logo + Título)
+# Cabeçalho Principal Integrado (Logo + Título ASA)
 col_logo, col_titulo = st.columns([1, 8])
 
 with col_logo:
     if os.path.exists("asa_logobrasao_verde.png"):
         st.image("asa_logobrasao_verde.png")
     else:
-        st.markdown("<h2 style='text-align: center; color: #436468; margin-top: 15px;'>A/S</h2>", unsafe_allow_html=True)
+        # Fallback caso a imagem não carregue, agora mostrando ASA
+        st.markdown("<h2 style='text-align: center; color: #436468; margin-top: 15px;'>ASA</h2>", unsafe_allow_html=True)
 
 with col_titulo:
-    st.title("Radar Estratégico de Licitações")
+    # Título principal atualizado
+    st.title("ASA - Radar Estratégico de Licitações")
     st.markdown("Monitoramento inteligente via **Portal Nacional de Contratações Públicas (PNCP)**.")
 
 st.divider()
@@ -246,7 +249,7 @@ with aba_busca:
             st.caption("👈 Configure os parâmetros ao lado e clique em Mapear Oportunidades.")
 
 with aba_interesse:
-    st.subheader("⭐ Seu Painel de Acompanhamento")
+    st.subheader("⭐ Painel de Acompanhamento ASA")
     st.markdown("Aqui ficam as licitações que o escritório decidiu monitorar.")
     
     if st.session_state['licitacoes_salvas'].empty:
