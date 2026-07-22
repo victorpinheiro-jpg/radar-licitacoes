@@ -55,7 +55,7 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     cor_fundo_claro = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
     cor_suspensa = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid") 
     cor_morta = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
-    cor_alvo = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid") # Verde claro para Prospects
+    cor_alvo = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")
     
     fonte_branca = Font(color="FFFFFF", bold=True)
     fonte_normal = Font(name="Calibri", size=11)
@@ -95,11 +95,9 @@ def aplicar_estilo_excel(writer, df, sheet_name):
         fundo_linha = PatternFill(fill_type=None)
         if row_idx % 2 == 0: fundo_linha = cor_fundo_claro
         
-        # Cores para rastreador
         if "suspen" in status_val: fundo_linha = cor_suspensa
         elif any(x in status_val for x in ["homolog", "revogad", "cancelad", "fracassad", "desert"]): fundo_linha = cor_morta
         
-        # Cores para a aba de prospecção
         if "Radar de Prospecção" in sheet_name: fundo_linha = cor_alvo if row_idx % 2 == 0 else PatternFill(fill_type=None)
 
         for col_idx in range(1, worksheet.max_column + 1):
@@ -353,11 +351,11 @@ with aba_rastreador:
         except Exception as e: st.error(f"Erro: {e}")
 
 # ==========================================
-# ABA 4: RADAR DE PROSPECÇÃO (B2B)
+# ABA 4: RADAR DE PROSPECÇÃO (B2B DUPLO CHECK)
 # ==========================================
 with aba_prospeccao:
     st.subheader("🎯 Radar de Prospecção de Clientes")
-    st.markdown("Suba sua planilha. O robô identificará os processos com vencedores declarados e extrairá a **Empresa Vencedora (Alvo)** e o **Valor Arrematado** para a equipe comercial atuar.")
+    st.markdown("Suba sua planilha. O robô usará **Dupla Varredura** (Contratos + Atas) para extrair a **Empresa Vencedora (Alvo)** e o **Valor Arrematado**.")
     
     arquivo_prospeccao = st.file_uploader("📂 Upload da Planilha para Prospecção (.xlsx)", type=["xlsx"], key="up_prospeccao")
     
@@ -370,34 +368,50 @@ with aba_prospeccao:
                 progresso_prosp = st.progress(0)
                 total_p = len(df_prosp)
                 
-                with st.spinner("Investigando Resultados e Contratos nos bastidores do Governo..."):
+                with st.spinner("Investigando Contratos e Atas nos bastidores do Governo..."):
                     for index, row in df_prosp.iterrows():
                         link = str(row["Link"]).strip()
                         match = re.search(r"editais/(\d+)/(\d+)/(\d+)", link)
                         
                         if match:
                             cnpj, ano, seq = match.groups()
-                            # Endpoint específico para descobrir quem venceu
-                            url_resultado = f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/resultados"
                             
                             alvo_nome = "Ainda sem vencedor publicado"
                             alvo_cnpj = "-"
                             valor_arrematado = row.get("Valor Estimado", 0.0)
+                            encontrou_vencedor = False
                             
+                            # TENTATIVA 1: Buscar por Contrato Assinado
                             try:
-                                resp_res = requests.get(url_resultado, headers=headers, timeout=10)
-                                if resp_res.status_code == 200:
-                                    dados_res = resp_res.json()
-                                    if len(dados_res) > 0:
-                                        # Pegando os dados da primeira empresa vencedora listada
-                                        item = dados_res[0]
+                                resp_c = requests.get(f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/contratos", headers=headers, timeout=10)
+                                if resp_c.status_code == 200:
+                                    dados_c = resp_c.json()
+                                    lista_c = dados_c if isinstance(dados_c, list) else dados_c.get("data", [])
+                                    if isinstance(lista_c, list) and len(lista_c) > 0:
+                                        item = lista_c[0]
                                         alvo_nome = item.get("nomeRazaoSocialFornecedor", alvo_nome)
                                         alvo_cnpj = item.get("niFornecedor", alvo_cnpj)
-                                        if item.get("valorTotalHomologado"):
-                                            valor_arrematado = float(item.get("valorTotalHomologado"))
+                                        val = item.get("valorInicial") or item.get("valorGlobal")
+                                        if val: valor_arrematado = float(val)
+                                        encontrou_vencedor = True
                             except: pass
                             
-                            # Cria uma nova linha no Relatório de Prospecção
+                            # TENTATIVA 2: Buscar pelo Resultado da Ata (Lote 1) se não houver contrato
+                            if not encontrou_vencedor:
+                                try:
+                                    resp_r = requests.get(f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/1/resultados", headers=headers, timeout=10)
+                                    if resp_r.status_code == 200:
+                                        dados_r = resp_r.json()
+                                        lista_r = dados_r if isinstance(dados_r, list) else dados_r.get("data", [])
+                                        if isinstance(lista_r, list) and len(lista_r) > 0:
+                                            item = lista_r[0]
+                                            alvo_nome = item.get("nomeRazaoSocialFornecedor", alvo_nome)
+                                            alvo_cnpj = item.get("niFornecedor", alvo_cnpj)
+                                            val = item.get("valorTotalHomologado")
+                                            if val: valor_arrematado = float(val)
+                                            encontrou_vencedor = True
+                                except: pass
+                            
                             resultados_alvos.append({
                                 "Identificação": row.get("Identificação", ""),
                                 "Órgão": row.get("Órgão", ""),
@@ -405,31 +419,32 @@ with aba_prospeccao:
                                 "CNPJ do Alvo": alvo_cnpj,
                                 "Valor Arrematado": valor_arrematado,
                                 "Objeto": row.get("Objeto", ""),
-                                "Anotações Equipe": "", # Espaço em branco pro CRM
+                                "Anotações Equipe": "", 
                                 "Link": link
                             })
                         time.sleep(0.3)
                         progresso_prosp.progress((index + 1) / total_p)
                 
                 df_alvos = pd.DataFrame(resultados_alvos)
-                
-                # Exibe só os que já tem alvo na tela
                 df_alvos_limpo = df_alvos[df_alvos["Empresa Vencedora (Alvo)"] != "Ainda sem vencedor publicado"]
                 
                 st.success(f"🎯 Varredura concluída! {len(df_alvos_limpo)} alvos em potencial encontrados.")
-                st.dataframe(df_alvos_limpo.style.format({"Valor Arrematado": "R$ {:,.2f}"}), hide_index=True, use_container_width=True)
                 
-                buffer_alvos = io.BytesIO()
-                with pd.ExcelWriter(buffer_alvos, engine='openpyxl') as writer:
-                    # Salva todos na planilha
-                    df_alvos.to_excel(writer, index=False, sheet_name='Radar de Prospecção ASA')
-                    aplicar_estilo_excel(writer, df_alvos, 'Radar de Prospecção ASA')
-                
-                st.download_button(
-                    label="📥 Baixar Relatório de Prospecção Comercial (.xlsx)",
-                    data=buffer_alvos.getvalue(),
-                    file_name=f"Alvos_Prospeccao_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                if not df_alvos_limpo.empty:
+                    st.dataframe(df_alvos_limpo.style.format({"Valor Arrematado": "R$ {:,.2f}"}), hide_index=True, use_container_width=True)
+                    
+                    buffer_alvos = io.BytesIO()
+                    with pd.ExcelWriter(buffer_alvos, engine='openpyxl') as writer:
+                        df_alvos.to_excel(writer, index=False, sheet_name='Radar de Prospecção ASA')
+                        aplicar_estilo_excel(writer, df_alvos, 'Radar de Prospecção ASA')
+                    
+                    st.download_button(
+                        label="📥 Baixar Relatório de Prospecção Comercial (.xlsx)",
+                        data=buffer_alvos.getvalue(),
+                        file_name=f"Alvos_Prospeccao_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.warning("Ainda não foram publicadas empresas vencedoras para essas licitações.")
         except Exception as e:
             st.error(f"Ocorreu um erro: {e}")
