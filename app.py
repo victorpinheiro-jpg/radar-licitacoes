@@ -103,12 +103,20 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
         
         passou_palavra = any(p in objeto_str for p in lista_palavras) if (lista_palavras and lista_palavras[0] != "") else True
         if passou_palavra and (valor_min <= valor <= valor_max):
+            
+            # --- CORREÇÃO DO LINK DO PNCP ---
             numero_compra = lic.get("numeroCompra", "")
             ano_compra = lic.get("anoCompra", "")
+            sequencial_compra = lic.get("sequencialCompra", "")
             cnpj = lic.get("orgaoEntidade", {}).get("cnpj", "")
             
-            if cnpj and ano_compra and numero_compra: link_final = f"https://pncp.gov.br/app/editais/{cnpj}/{ano_compra}/{numero_compra}"
-            else: link_final = "https://pncp.gov.br"
+            if cnpj and ano_compra and str(sequencial_compra) != "": 
+                link_final = f"https://pncp.gov.br/app/editais/{cnpj}/{ano_compra}/{sequencial_compra}"
+            elif lic.get("linkSistemaOrigem"):
+                link_original = str(lic.get("linkSistemaOrigem", ""))
+                link_final = link_original if link_original.startswith("http") else "https://" + link_original
+            else: 
+                link_final = "https://pncp.gov.br"
 
             identificacao = f"{numero_compra}/{ano_compra}" if numero_compra and ano_compra else str(id_unico)
 
@@ -156,7 +164,6 @@ with aba_busca:
         palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
         
-        # AQUI ESTÁ A ALTERAÇÃO: 100 milhões como valor padrão e salto de 1 milhão.
         st.subheader("💰 Filtro Financeiro")
         valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
