@@ -4,40 +4,21 @@ import requests
 from datetime import datetime, timedelta
 import time
 import os
+import io
 
-# --- 1. CONFIGURAÇÃO VISUAL E MEMÓRIA (PALETA PASTEL/SÓBRIA) ---
-# Título da aba do navegador alterado para ASA
+# --- 1. CONFIGURAÇÃO VISUAL E IDENTIDADE ASA ---
 st.set_page_config(page_title="ASA | Radar de Infraestrutura", page_icon="⚖️", layout="wide")
 
 st.markdown("""
     <style>
-    /* Esconde o menu padrão e ajusta o respiro do topo */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     .block-container { padding-top: 2rem; }
-    
-    /* Botões: Verde/Azul Pastel Muted (#6a9094) */
-    .stButton>button { 
-        width: 100%; 
-        border-radius: 8px; 
-        font-weight: 500; 
-        background-color: #6a9094; 
-        color: white; 
-        height: 3em;
-        border: none;
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover { 
-        background-color: #55787c; 
-        color: white;
-    }
-    
-    /* Textos, Títulos e Métricas */
+    .stButton>button { width: 100%; border-radius: 8px; font-weight: 500; background-color: #6a9094; color: white; height: 3em; border: none; transition: all 0.3s ease; }
+    .stButton>button:hover { background-color: #55787c; color: white; }
     div[data-testid="stMetricValue"] { color: #436468; font-size: 2.2rem; font-weight: 700; }
     h1, h2, h3, h4, h5, h6 { color: #436468 !important; font-weight: 600; }
-    
-    /* Linha divisória bem suave */
     hr { border-bottom-color: #6a9094 !important; opacity: 0.3; }
     </style>
 """, unsafe_allow_html=True)
@@ -47,21 +28,14 @@ if 'licitacoes_salvas' not in st.session_state:
 
 # --- TRADUTOR DE CÓDIGOS DO GOVERNO ---
 MAPA_MODALIDADES = {
-    "Leilão": 1, 
-    "Diálogo Competitivo": 2, 
-    "Concurso": 3, 
-    "Concorrência": 4, 
-    "Pregão Eletrônico": 6
+    "Leilão": 1, "Diálogo Competitivo": 2, "Concurso": 3, 
+    "Concorrência": 4, "Pregão Eletrônico": 6
 }
 
 # --- 2. MOTOR DE BUSCA ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
-    }
-    
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     todos_resultados = []
     erros = []
     
@@ -85,30 +59,19 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
             
             url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
             
-            sucesso = False
-            tentativas = 0
-            max_tentativas = 3 
-            
-            while not sucesso and tentativas < max_tentativas:
+            sucesso = False; tentativas = 0
+            while not sucesso and tentativas < 3:
                 try:
                     response = requests.get(url, headers=headers, timeout=30)
                     if response.status_code == 200:
-                        dados = response.json().get("data", [])
-                        todos_resultados.extend(dados)
+                        todos_resultados.extend(response.json().get("data", []))
                         sucesso = True
                     else:
-                        tentativas += 1
-                        time.sleep(2) 
-                except requests.exceptions.Timeout:
-                    tentativas += 1
-                    time.sleep(2)
-                except Exception as e:
-                    tentativas += 1
-                    time.sleep(2)
+                        tentativas += 1; time.sleep(2) 
+                except:
+                    tentativas += 1; time.sleep(2)
             
-            if not sucesso:
-                erros.append(f"{modalidade} (bloco {str_inicio}): O Governo bloqueou após 3 tentativas.")
-                
+            if not sucesso: erros.append(f"{modalidade} (bloco {str_inicio})")
             time.sleep(1.5)
             
     return todos_resultados, list(set(erros))
@@ -122,26 +85,25 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
     
     for lic in licitacoes:
         id_unico = lic.get("id") or lic.get("linkSistemaOrigem")
-        if id_unico in ids_adicionados:
-            continue
+        if id_unico in ids_adicionados: continue
             
         objeto = str(lic.get("objeto", "")).lower()
         valor = lic.get("valorTotalEstimado") or 0.0 
         
         passou_palavra = any(p in objeto for p in lista_palavras) if (lista_palavras and lista_palavras[0] != "") else True
-        passou_valor = (valor_min <= valor <= valor_max)
-        
-        if passou_palavra and passou_valor:
+        if passou_palavra and (valor_min <= valor <= valor_max):
             link_original = lic.get("linkSistemaOrigem", "")
-            
-            if not link_original or str(link_original).strip() == "":
-                link_final = None 
-            elif not link_original.startswith("http"):
-                link_final = "https://" + link_original
-            else:
-                link_final = link_original
+            if not link_original or str(link_original).strip() == "": link_final = None 
+            elif not link_original.startswith("http"): link_final = "https://" + link_original
+            else: link_final = link_original
+
+            # Extraindo a Identificação (Número/Ano)
+            numero_compra = lic.get("numeroCompra", "")
+            ano_compra = lic.get("anoCompra", "")
+            identificacao = f"{numero_compra}/{ano_compra}" if numero_compra and ano_compra else str(id_unico)
 
             resultados.append({
+                "Identificação": identificacao,
                 "Órgão": lic.get("orgaoEntidade", {}).get("razaoSocial", "N/A"),
                 "Modalidade": lic.get("modalidadeNome", "N/A"),
                 "Objeto": lic.get("objeto"),
@@ -153,20 +115,15 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
             
     return pd.DataFrame(resultados)
 
-# --- 3. FRONTEND E ABAS ---
-
-# Cabeçalho Principal Integrado (Logo + Título ASA)
+# --- 3. FRONTEND ---
 col_logo, col_titulo = st.columns([1, 8])
-
 with col_logo:
     if os.path.exists("asa_logobrasao_verde.png"):
         st.image("asa_logobrasao_verde.png")
     else:
-        # Fallback caso a imagem não carregue, agora mostrando ASA
         st.markdown("<h2 style='text-align: center; color: #436468; margin-top: 15px;'>ASA</h2>", unsafe_allow_html=True)
 
 with col_titulo:
-    # Título principal atualizado
     st.title("ASA - Radar Estratégico de Licitações")
     st.markdown("Monitoramento inteligente via **Portal Nacional de Contratações Públicas (PNCP)**.")
 
@@ -182,36 +139,27 @@ with aba_busca:
         hoje = datetime.now()
         data_inicio = st.date_input("Data Inicial:", value=hoje - timedelta(days=15))
         data_fim = st.date_input("Data Final:", value=hoje)
-        
         if data_inicio > data_fim:
-            st.warning("⚠️ Datas invertidas corrigidas automaticamente.")
             data_inicio, data_fim = data_fim, data_inicio
             
         palavras_chave = st.text_input("Palavras-chave (vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
-        
         st.subheader("💰 Filtro Financeiro")
         valor_min = st.number_input("Valor Mín. (R$):", value=0.0, step=100000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=100000.0)
-        
         buscar = st.button("🔍 Mapear Oportunidades")
 
     with col_resultados:
         if buscar:
-            with st.spinner("Varrendo os servidores do Governo (com tentativas automáticas em caso de erro)..."):
+            with st.spinner("Varrendo os servidores do Governo..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
-                
-                if erros:
-                    st.warning(f"Alguns blocos falharam (mesmo após 3 tentativas): {', '.join(erros)}")
+                if erros: st.warning(f"Ocorreram instabilidades em blocos específicos: {', '.join(erros)}")
                     
                 if len(dados_brutos) > 0:
                     df_final = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max)
-                    
                     if not df_final.empty:
                         df_final.insert(0, "Acompanhar", False)
-                        
                         st.write("### 📌 Resultados da Busca")
-                        st.caption("Marque a caixinha 'Acompanhar' nas licitações desejadas e clique no botão abaixo da tabela.")
                         
                         valor_total = df_final["Valor Estimado"].sum()
                         m1, m2 = st.columns(2)
@@ -225,52 +173,53 @@ with aba_busca:
                             df_final,
                             column_config={
                                 "Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False),
-                                "Link": st.column_config.LinkColumn("Acesso ao Edital", display_text="Acessar 🔗")
+                                "Link": st.column_config.LinkColumn("Edital", display_text="Acessar 🔗")
                             },
-                            disabled=["Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação"],
-                            hide_index=True,
-                            use_container_width=True
+                            disabled=["Identificação", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação"],
+                            hide_index=True, use_container_width=True
                         )
                         
                         if st.button("💾 Enviar selecionadas para Aba de Interesse"):
                             selecionadas = df_editado[df_editado["Acompanhar"] == True].copy()
                             selecionadas = selecionadas.drop(columns=["Acompanhar"])
-                            
                             if not selecionadas.empty:
-                                st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Objeto"])
-                                st.success("Licitações salvas com sucesso! Vá para a aba 'Licitações de Interesse' no topo.")
+                                st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Identificação"])
+                                st.success("Licitações salvas com sucesso! Vá para a aba de Interesse.")
                             else:
-                                st.warning("Você não marcou nenhuma licitação na caixinha.")
+                                st.warning("Você não marcou nenhuma licitação.")
                     else:
-                        st.warning("Nenhuma licitação passou nos filtros de Valor ou Palavras-chave.")
+                        st.warning("Nenhuma licitação passou nos filtros.")
                 else:
-                    st.info("Nenhuma licitação encontrada neste período ou o governo bloqueou a busca.")
-        else:
-            st.caption("👈 Configure os parâmetros ao lado e clique em Mapear Oportunidades.")
+                    st.info("Nenhuma licitação encontrada ou bloqueio temporário do governo.")
 
 with aba_interesse:
-    st.subheader("⭐ Painel de Acompanhamento ASA")
-    st.markdown("Aqui ficam as licitações que o escritório decidiu monitorar.")
+    st.subheader("⭐ Seu Painel Temporário de Acompanhamento")
+    st.markdown("Revise suas licitações favoritas e faça o download da planilha final para o seu computador.")
     
     if st.session_state['licitacoes_salvas'].empty:
-        st.info("Você ainda não salvou nenhuma licitação de interesse.")
+        st.info("Você ainda não selecionou nenhuma licitação.")
     else:
         st.dataframe(
             st.session_state['licitacoes_salvas'].style.format({"Valor Estimado": "R$ {:,.2f}"}),
-            column_config={
-                "Link": st.column_config.LinkColumn("Edital", display_text="Acessar 🔗")
-            },
-            hide_index=True,
-            use_container_width=True
+            column_config={"Link": st.column_config.LinkColumn("Edital", display_text="Acessar 🔗")},
+            hide_index=True, use_container_width=True
         )
+        
+        # GERADOR DO ARQUIVO EXCEL OFICIAL (.xlsx)
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            st.session_state['licitacoes_salvas'].to_excel(writer, index=False, sheet_name='Oportunidades ASA')
+        
+        nome_arquivo = f"Licitacoes_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx"
         
         st.download_button(
-            label="📥 Exportar Lista de Interesse para o Excel",
-            data=st.session_state['licitacoes_salvas'].to_csv(index=False, sep=';', decimal=',').encode('utf-8-sig'),
-            file_name="licitacoes_interesse.csv",
-            mime="text/csv"
+            label="📥 Baixar Arquivo Excel (.xlsx)",
+            data=buffer.getvalue(),
+            file_name=nome_arquivo,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        if st.button("🗑️ Limpar Lista de Interesse"):
+        st.divider()
+        if st.button("🗑️ Limpar Lista Temporária"):
             st.session_state['licitacoes_salvas'] = pd.DataFrame()
             st.rerun()
