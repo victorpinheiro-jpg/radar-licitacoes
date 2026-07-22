@@ -23,15 +23,19 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# INICIALIZANDO A MEMÓRIA DO SITE
 if 'licitacoes_salvas' not in st.session_state:
     st.session_state['licitacoes_salvas'] = pd.DataFrame()
+if 'resultados_busca' not in st.session_state:
+    st.session_state['resultados_busca'] = pd.DataFrame()
+if 'busca_realizada' not in st.session_state:
+    st.session_state['busca_realizada'] = False
 
 # --- TRADUTOR DE CÓDIGOS DO GOVERNO E ESTADOS ---
 MAPA_MODALIDADES = {
     "Leilão": 1, "Diálogo Competitivo": 2, "Concurso": 3, 
     "Concorrência": 4, "Pregão Eletrônico": 6
 }
-
 LISTA_UFS = ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 
 # --- 2. MOTOR DE BUSCA ---
@@ -89,7 +93,6 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
         id_unico = lic.get("id") or lic.get("linkSistemaOrigem")
         if id_unico in ids_adicionados: continue
 
-        # Filtro de Estado (UF)
         uf_licitacao = lic.get("unidadeOrgao", {}).get("ufSigla", "N/A")
         if estados_selecionados and (uf_licitacao not in estados_selecionados):
             continue
@@ -100,7 +103,6 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
         
         passou_palavra = any(p in objeto_str for p in lista_palavras) if (lista_palavras and lista_palavras[0] != "") else True
         if passou_palavra and (valor_min <= valor <= valor_max):
-            
             numero_compra = lic.get("numeroCompra", "")
             ano_compra = lic.get("anoCompra", "")
             cnpj = lic.get("orgaoEntidade", {}).get("cnpj", "")
@@ -127,11 +129,8 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
 # --- 3. FRONTEND ---
 col_logo, col_titulo = st.columns([1, 8])
 with col_logo:
-    if os.path.exists("asa_logobrasao_verde.png"):
-        st.image("asa_logobrasao_verde.png")
-    else:
-        st.markdown("<h2 style='text-align: center; color: #436468; margin-top: 15px;'>ASA</h2>", unsafe_allow_html=True)
-
+    if os.path.exists("asa_logobrasao_verde.png"): st.image("asa_logobrasao_verde.png")
+    else: st.markdown("<h2 style='text-align: center; color: #436468; margin-top: 15px;'>ASA</h2>", unsafe_allow_html=True)
 with col_titulo:
     st.title("ASA - Radar Estratégico de Licitações")
     st.markdown("Monitoramento inteligente via **Portal Nacional de Contratações Públicas (PNCP)**.")
@@ -165,50 +164,57 @@ with aba_busca:
         if buscar:
             with st.spinner("Varrendo os servidores do Governo..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
-                if erros: st.warning(f"Ocorreram instabilidades em blocos específicos: {', '.join(erros)}")
+                if erros: st.warning(f"Avisos de rede: {', '.join(erros)}")
                     
                 if len(dados_brutos) > 0:
-                    # Passando o filtro de estados para a função
                     df_final = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados)
-                    
-                    if not df_final.empty:
-                        df_final.insert(0, "Acompanhar", False)
-                        st.write("### 📌 Resultados da Busca")
-                        
-                        valor_total = df_final["Valor Estimado"].sum()
-                        m1, m2 = st.columns(2)
-                        m1.metric("Encontradas (com filtro)", f"{len(df_final)}")
-                        m2.metric("Volume Financeiro", f"R$ {valor_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-                        
-                        if "Data Publicação" in df_final.columns:
-                            df_final = df_final.sort_values(by="Data Publicação", ascending=False)
-                        
-                        df_editado = st.data_editor(
-                            df_final,
-                            column_config={
-                                "Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False),
-                                "Link": st.column_config.LinkColumn("Edital", display_text="Acessar 🔗")
-                            },
-                            disabled=["Identificação", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação"],
-                            hide_index=True, use_container_width=True
-                        )
-                        
-                        if st.button("💾 Enviar selecionadas para Aba de Interesse"):
-                            selecionadas = df_editado[df_editado["Acompanhar"] == True].copy()
-                            selecionadas = selecionadas.drop(columns=["Acompanhar"])
-                            if not selecionadas.empty:
-                                st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Identificação"])
-                                st.success("Licitações salvas com sucesso! Vá para a aba de Interesse.")
-                            else:
-                                st.warning("Você não marcou nenhuma licitação.")
-                    else:
-                        st.warning("Nenhuma licitação passou nos filtros.")
+                    st.session_state['resultados_busca'] = df_final
+                    st.session_state['busca_realizada'] = True
                 else:
+                    st.session_state['resultados_busca'] = pd.DataFrame()
+                    st.session_state['busca_realizada'] = True
                     st.info("Nenhuma licitação encontrada ou bloqueio temporário do governo.")
+
+        # Exibe os resultados salvos na memória, mesmo se o botão for clicado
+        if st.session_state['busca_realizada']:
+            df_atual = st.session_state['resultados_busca']
+            if not df_atual.empty:
+                if "Acompanhar" not in df_atual.columns:
+                    df_atual.insert(0, "Acompanhar", False)
+                
+                st.write("### 📌 Resultados da Busca")
+                valor_total = df_atual["Valor Estimado"].sum()
+                m1, m2 = st.columns(2)
+                m1.metric("Encontradas (com filtro)", f"{len(df_atual)}")
+                m2.metric("Volume Financeiro", f"R$ {valor_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                
+                if "Data Publicação" in df_atual.columns:
+                    df_atual = df_atual.sort_values(by="Data Publicação", ascending=False)
+                
+                df_editado = st.data_editor(
+                    df_atual,
+                    column_config={
+                        "Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False),
+                        "Link": st.column_config.LinkColumn("Edital", display_text="Acessar 🔗")
+                    },
+                    disabled=["Identificação", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação"],
+                    hide_index=True, use_container_width=True,
+                    key="editor_resultados"
+                )
+                
+                if st.button("💾 Enviar selecionadas para Aba de Interesse"):
+                    selecionadas = df_editado[df_editado["Acompanhar"] == True].copy()
+                    selecionadas = selecionadas.drop(columns=["Acompanhar"])
+                    if not selecionadas.empty:
+                        st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Identificação"])
+                        st.success("Licitações salvas com sucesso! Vá para a aba de Interesse.")
+                    else:
+                        st.warning("Você não marcou nenhuma licitação.")
+            else:
+                st.warning("Nenhuma licitação passou nos filtros. Tente apagar as palavras-chave ou remover o Estado.")
 
 with aba_interesse:
     st.subheader("⭐ Seu Painel Temporário de Acompanhamento")
-    st.markdown("Revise suas licitações favoritas e faça o download da planilha final para o seu computador.")
     
     if st.session_state['licitacoes_salvas'].empty:
         st.info("Você ainda não selecionou nenhuma licitação.")
@@ -219,20 +225,16 @@ with aba_interesse:
             hide_index=True, use_container_width=True
         )
         
-        # GERADOR DO ARQUIVO EXCEL OFICIAL (.xlsx)
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             st.session_state['licitacoes_salvas'].to_excel(writer, index=False, sheet_name='Oportunidades ASA')
         
-        nome_arquivo = f"Licitacoes_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx"
-        
         st.download_button(
             label="📥 Baixar Arquivo Excel (.xlsx)",
             data=buffer.getvalue(),
-            file_name=nome_arquivo,
+            file_name=f"Licitacoes_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        
         st.divider()
         if st.button("🗑️ Limpar Lista Temporária"):
             st.session_state['licitacoes_salvas'] = pd.DataFrame()
