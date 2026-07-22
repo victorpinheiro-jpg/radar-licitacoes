@@ -87,26 +87,32 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
         id_unico = lic.get("id") or lic.get("linkSistemaOrigem")
         if id_unico in ids_adicionados: continue
             
-        objeto = str(lic.get("objeto", "")).lower()
+        # CORREÇÃO 1: Buscando o objeto em todas as variações que o Governo usa
+        objeto = lic.get("objetoCompra") or lic.get("sinteseObjeto") or lic.get("objeto") or "Descrição indisponível"
+        objeto_str = str(objeto).lower()
+        
         valor = lic.get("valorTotalEstimado") or 0.0 
         
-        passou_palavra = any(p in objeto for p in lista_palavras) if (lista_palavras and lista_palavras[0] != "") else True
+        passou_palavra = any(p in objeto_str for p in lista_palavras) if (lista_palavras and lista_palavras[0] != "") else True
         if passou_palavra and (valor_min <= valor <= valor_max):
-            link_original = lic.get("linkSistemaOrigem", "")
-            if not link_original or str(link_original).strip() == "": link_final = None 
-            elif not link_original.startswith("http"): link_final = "https://" + link_original
-            else: link_final = link_original
-
-            # Extraindo a Identificação (Número/Ano)
+            
             numero_compra = lic.get("numeroCompra", "")
             ano_compra = lic.get("anoCompra", "")
+            cnpj = lic.get("orgaoEntidade", {}).get("cnpj", "")
+            
+            # CORREÇÃO 2: Forçando o link a ir sempre para o PNCP
+            if cnpj and ano_compra and numero_compra:
+                link_final = f"https://pncp.gov.br/app/editais/{cnpj}/{ano_compra}/{numero_compra}"
+            else:
+                link_final = "https://pncp.gov.br"
+
             identificacao = f"{numero_compra}/{ano_compra}" if numero_compra and ano_compra else str(id_unico)
 
             resultados.append({
                 "Identificação": identificacao,
                 "Órgão": lic.get("orgaoEntidade", {}).get("razaoSocial", "N/A"),
                 "Modalidade": lic.get("modalidadeNome", "N/A"),
-                "Objeto": lic.get("objeto"),
+                "Objeto": objeto,
                 "Valor Estimado": valor,
                 "Data Publicação": lic.get("dataPublicacaoPncp"),
                 "Link": link_final
