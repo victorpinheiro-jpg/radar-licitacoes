@@ -155,8 +155,11 @@ with aba_busca:
         st.subheader("🔎 Filtros Avançados")
         palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
-        valor_min = st.number_input("Valor Mín. (R$):", value=0.0, step=100000.0)
-        valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=100000.0)
+        
+        # AQUI ESTÁ A ALTERAÇÃO: 100 milhões como valor padrão e salto de 1 milhão.
+        st.subheader("💰 Filtro Financeiro")
+        valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
+        valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
         
         buscar = st.button("🔍 Mapear Oportunidades")
 
@@ -175,7 +178,6 @@ with aba_busca:
                     st.session_state['busca_realizada'] = True
                     st.info("Nenhuma licitação encontrada ou bloqueio temporário do governo.")
 
-        # Exibe os resultados salvos na memória, mesmo se o botão for clicado
         if st.session_state['busca_realizada']:
             df_atual = st.session_state['resultados_busca']
             if not df_atual.empty:
@@ -211,7 +213,7 @@ with aba_busca:
                     else:
                         st.warning("Você não marcou nenhuma licitação.")
             else:
-                st.warning("Nenhuma licitação passou nos filtros. Tente apagar as palavras-chave ou remover o Estado.")
+                st.warning("Nenhuma licitação passou nos filtros (Lembre-se que o mínimo é R$ 100 Milhões).")
 
 with aba_interesse:
     st.subheader("⭐ Seu Painel Temporário de Acompanhamento")
