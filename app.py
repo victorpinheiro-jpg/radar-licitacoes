@@ -26,11 +26,13 @@ st.markdown("""
 if 'licitacoes_salvas' not in st.session_state:
     st.session_state['licitacoes_salvas'] = pd.DataFrame()
 
-# --- TRADUTOR DE CÓDIGOS DO GOVERNO ---
+# --- TRADUTOR DE CÓDIGOS DO GOVERNO E ESTADOS ---
 MAPA_MODALIDADES = {
     "Leilão": 1, "Diálogo Competitivo": 2, "Concurso": 3, 
     "Concorrência": 4, "Pregão Eletrônico": 6
 }
+
+LISTA_UFS = ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"]
 
 # --- 2. MOTOR DE BUSCA ---
 @st.cache_data(ttl=300)
@@ -76,7 +78,7 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
             
     return todos_resultados, list(set(erros))
 
-def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
+def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_selecionados):
     if not licitacoes: return pd.DataFrame()
         
     resultados = []
@@ -86,11 +88,14 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
     for lic in licitacoes:
         id_unico = lic.get("id") or lic.get("linkSistemaOrigem")
         if id_unico in ids_adicionados: continue
+
+        # Filtro de Estado (UF)
+        uf_licitacao = lic.get("unidadeOrgao", {}).get("ufSigla", "N/A")
+        if estados_selecionados and (uf_licitacao not in estados_selecionados):
+            continue
             
-        # CORREÇÃO 1: Buscando o objeto em todas as variações que o Governo usa
         objeto = lic.get("objetoCompra") or lic.get("sinteseObjeto") or lic.get("objeto") or "Descrição indisponível"
         objeto_str = str(objeto).lower()
-        
         valor = lic.get("valorTotalEstimado") or 0.0 
         
         passou_palavra = any(p in objeto_str for p in lista_palavras) if (lista_palavras and lista_palavras[0] != "") else True
@@ -100,16 +105,14 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max):
             ano_compra = lic.get("anoCompra", "")
             cnpj = lic.get("orgaoEntidade", {}).get("cnpj", "")
             
-            # CORREÇÃO 2: Forçando o link a ir sempre para o PNCP
-            if cnpj and ano_compra and numero_compra:
-                link_final = f"https://pncp.gov.br/app/editais/{cnpj}/{ano_compra}/{numero_compra}"
-            else:
-                link_final = "https://pncp.gov.br"
+            if cnpj and ano_compra and numero_compra: link_final = f"https://pncp.gov.br/app/editais/{cnpj}/{ano_compra}/{numero_compra}"
+            else: link_final = "https://pncp.gov.br"
 
             identificacao = f"{numero_compra}/{ano_compra}" if numero_compra and ano_compra else str(id_unico)
 
             resultados.append({
                 "Identificação": identificacao,
+                "UF": uf_licitacao,
                 "Órgão": lic.get("orgaoEntidade", {}).get("razaoSocial", "N/A"),
                 "Modalidade": lic.get("modalidadeNome", "N/A"),
                 "Objeto": objeto,
@@ -141,18 +144,21 @@ with aba_busca:
     col_filtros, col_resultados = st.columns([1, 3], gap="large")
 
     with col_filtros:
-        st.subheader("🎯 Parâmetros")
+        st.subheader("🎯 Parâmetros Regionais")
+        estados_selecionados = st.multiselect("Estados de Interesse (UF):", LISTA_UFS, help="Deixe em branco para buscar no Brasil inteiro.")
+        
+        st.subheader("📅 Período")
         hoje = datetime.now()
         data_inicio = st.date_input("Data Inicial:", value=hoje - timedelta(days=15))
         data_fim = st.date_input("Data Final:", value=hoje)
-        if data_inicio > data_fim:
-            data_inicio, data_fim = data_fim, data_inicio
+        if data_inicio > data_fim: data_inicio, data_fim = data_fim, data_inicio
             
-        palavras_chave = st.text_input("Palavras-chave (vírgula):", "")
+        st.subheader("🔎 Filtros Avançados")
+        palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
-        st.subheader("💰 Filtro Financeiro")
         valor_min = st.number_input("Valor Mín. (R$):", value=0.0, step=100000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=100000.0)
+        
         buscar = st.button("🔍 Mapear Oportunidades")
 
     with col_resultados:
@@ -162,7 +168,9 @@ with aba_busca:
                 if erros: st.warning(f"Ocorreram instabilidades em blocos específicos: {', '.join(erros)}")
                     
                 if len(dados_brutos) > 0:
-                    df_final = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max)
+                    # Passando o filtro de estados para a função
+                    df_final = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados)
+                    
                     if not df_final.empty:
                         df_final.insert(0, "Acompanhar", False)
                         st.write("### 📌 Resultados da Busca")
@@ -181,7 +189,7 @@ with aba_busca:
                                 "Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False),
                                 "Link": st.column_config.LinkColumn("Edital", display_text="Acessar 🔗")
                             },
-                            disabled=["Identificação", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação"],
+                            disabled=["Identificação", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação"],
                             hide_index=True, use_container_width=True
                         )
                         
