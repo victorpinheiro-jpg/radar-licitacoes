@@ -122,10 +122,9 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     worksheet.freeze_panes = 'A2'
     worksheet.auto_filter.ref = worksheet.dimensions
 
-# --- 2. MOTORES DE BUSCA (AGORA COM PARALELISMO NA BUSCA INICIAL TAMBÉM) ---
+# --- 2. MOTORES DE BUSCA (MULTITHREADING) ---
 
 def worker_busca_inicial(modalidade, codigo, str_inicio, str_fim):
-    """Robô operário que faz uma única requisição de busca."""
     url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     tentativas = 0
@@ -163,7 +162,6 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
         for inicio_chunk, fim_chunk in chunks:
             tarefas_busca.append((modalidade, codigo, inicio_chunk.strftime('%Y%m%d'), fim_chunk.strftime('%Y%m%d')))
             
-    # Disparando os robôs de busca simultaneamente!
     with ThreadPoolExecutor(max_workers=10) as executor:
         futuros = [executor.submit(worker_busca_inicial, mod, cod, ini, fim) for mod, cod, ini, fim in tarefas_busca]
         for futuro in as_completed(futuros):
@@ -234,7 +232,7 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
             ids_adicionados.add(id_unico)
     return pd.DataFrame(resultados)
 
-# --- 3. WORKERS PARA MULTITHREADING (RASTREADOR E NOTÍCIAS) ---
+# --- WORKERS DE PROCESSAMENTO EM PARALELO ---
 def worker_rastrear(index, row):
     link = str(row["Link"]).strip()
     resultado = {
@@ -546,10 +544,6 @@ with aba_prospeccao:
         except Exception as e: st.error(f"Erro ao processar: {e}")
 
 # ==========================================
-# ABA 5: CLIPPING DE NOTÍCIAS TURBO
-# ==========================================
-with aba_noticias:
-   # ==========================================
 # ABA 5: CLIPPING DE NOTÍCIAS TURBO
 # ==========================================
 with aba_noticias:
