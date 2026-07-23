@@ -54,7 +54,6 @@ def calcular_dias_restantes(data_sessao_str):
 
 def aplicar_estilo_excel(writer, df, sheet_name):
     worksheet = writer.sheets[sheet_name]
-    
     cor_asa = PatternFill(start_color="436468", end_color="436468", fill_type="solid")
     cor_fundo_claro = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
     cor_suspensa = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid") 
@@ -82,7 +81,6 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     for col in worksheet.columns:
         col_letter = col[0].column_letter
         col_name = col[0].value
-        
         if col_name in ["Objeto", "Manchete / Título"]: worksheet.column_dimensions[col_letter].width = 65
         elif col_name in ["Órgão", "Empresa Vencedora (Alvo)"]: worksheet.column_dimensions[col_letter].width = 40
         elif col_name in ["Link", "Link da Notícia", "Anotações Equipe"]: worksheet.column_dimensions[col_letter].width = 45
@@ -93,30 +91,24 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     for row_idx in range(2, worksheet.max_row + 1):
         status_val = str(worksheet.cell(row=row_idx, column=status_col_idx).value).lower() if status_col_idx else ""
         dias_val = str(worksheet.cell(row=row_idx, column=dias_col_idx).value) if dias_col_idx else ""
-        
         fundo_linha = PatternFill(fill_type=None)
         if row_idx % 2 == 0: fundo_linha = cor_fundo_claro
-        
         if "suspen" in status_val: fundo_linha = cor_suspensa
         elif any(x in status_val for x in ["homolog", "revogad", "cancelad", "fracassad", "desert"]): fundo_linha = cor_morta
-        
         if "Radar de Prospecção" in sheet_name: fundo_linha = cor_alvo if row_idx % 2 == 0 else PatternFill(fill_type=None)
 
         for col_idx in range(1, worksheet.max_column + 1):
             cell = worksheet.cell(row=row_idx, column=col_idx)
             col_name = worksheet.cell(row=1, column=col_idx).value
-            
             cell.fill = fundo_linha
             cell.border = borda_fina
             cell.font = fonte_normal
-            
             if col_name == "Dias Restantes":
                 if "HOJE" in dias_val: cell.font = fonte_urgente
                 elif "Faltam" in dias_val:
                     try:
                         if int(re.search(r'\d+', dias_val).group()) <= 5: cell.font = fonte_urgente 
                     except: pass
-
             if col_name in ["Objeto", "Anotações Equipe", "Empresa Vencedora (Alvo)", "Manchete / Título"]:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
                 texto_len = len(str(cell.value)) if cell.value else 0
@@ -125,17 +117,33 @@ def aplicar_estilo_excel(writer, df, sheet_name):
                     worksheet.row_dimensions[row_idx].height = linhas_estimadas * 15
             else: 
                 cell.alignment = Alignment(vertical="top")
-                
             if col_name in ["Valor Estimado", "Valor Arrematado"] and isinstance(cell.value, (int, float)):
                 cell.number_format = 'R$ #,##0.00'
-
     worksheet.freeze_panes = 'A2'
     worksheet.auto_filter.ref = worksheet.dimensions
 
-# --- 2. MOTORES DE BUSCA (API E FILTROS) ---
+# --- 2. MOTORES DE BUSCA (AGORA COM PARALELISMO NA BUSCA INICIAL TAMBÉM) ---
+
+def worker_busca_inicial(modalidade, codigo, str_inicio, str_fim):
+    """Robô operário que faz uma única requisição de busca."""
+    url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    tentativas = 0
+    while tentativas < 3:
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200:
+                return True, response.json().get("data", [])
+            else: 
+                tentativas += 1
+                time.sleep(1) 
+        except: 
+            tentativas += 1
+            time.sleep(1)
+    return False, f"{modalidade} (bloco {str_inicio})"
+
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     todos_resultados = []
     erros = []
     if not modalidades_selecionadas: 
@@ -148,31 +156,23 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
         chunks.append((atual, proximo))
         atual = proximo + timedelta(days=1)
         
+    tarefas_busca = []
     for modalidade in modalidades_selecionadas:
         codigo = MAPA_MODALIDADES.get(modalidade)
         if not codigo: continue
         for inicio_chunk, fim_chunk in chunks:
-            str_inicio = inicio_chunk.strftime("%Y%m%d")
-            str_fim = fim_chunk.strftime("%Y%m%d")
-            url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
+            tarefas_busca.append((modalidade, codigo, inicio_chunk.strftime('%Y%m%d'), fim_chunk.strftime('%Y%m%d')))
             
-            sucesso = False
-            tentativas = 0
-            while not sucesso and tentativas < 3:
-                try:
-                    response = requests.get(url, headers=headers, timeout=30)
-                    if response.status_code == 200:
-                        todos_resultados.extend(response.json().get("data", []))
-                        sucesso = True
-                    else: 
-                        tentativas += 1
-                        time.sleep(2) 
-                except: 
-                    tentativas += 1
-                    time.sleep(2)
-            if not sucesso: 
-                erros.append(f"{modalidade} (bloco {str_inicio})")
-            time.sleep(1.5)
+    # Disparando os robôs de busca simultaneamente!
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futuros = [executor.submit(worker_busca_inicial, mod, cod, ini, fim) for mod, cod, ini, fim in tarefas_busca]
+        for futuro in as_completed(futuros):
+            sucesso, resultado = futuro.result()
+            if sucesso:
+                todos_resultados.extend(resultado)
+            else:
+                erros.append(resultado)
+                
     return todos_resultados, list(set(erros))
 
 def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_selecionados):
@@ -234,7 +234,7 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
             ids_adicionados.add(id_unico)
     return pd.DataFrame(resultados)
 
-# --- 3. WORKERS PARA MULTITHREADING (VELOCIDADE TURBO) ---
+# --- 3. WORKERS PARA MULTITHREADING (RASTREADOR E NOTÍCIAS) ---
 def worker_rastrear(index, row):
     link = str(row["Link"]).strip()
     resultado = {
@@ -279,7 +279,6 @@ def worker_prospeccao(row):
         cnpj, ano, seq = match.groups()
         encontrou = False
         
-        # Check 1: Contrato
         try: 
             r_c = requests.get(f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/contratos", headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
             if r_c.status_code == 200:
@@ -288,13 +287,10 @@ def worker_prospeccao(row):
                     alvo["Empresa Vencedora (Alvo)"] = lista[0].get("nomeRazaoSocialFornecedor", alvo["Empresa Vencedora (Alvo)"])
                     alvo["CNPJ do Alvo"] = lista[0].get("niFornecedor", alvo["CNPJ do Alvo"])
                     val = lista[0].get("valorInicial") or lista[0].get("valorGlobal")
-                    if val: 
-                        alvo["Valor Arrematado"] = float(val)
+                    if val: alvo["Valor Arrematado"] = float(val)
                     encontrou = True
-        except: 
-            pass
+        except: pass
         
-        # Check 2: Resultado (Caso não haja contrato)
         if not encontrou:
             try: 
                 r_r = requests.get(f"https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens/1/resultados", headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
@@ -304,10 +300,8 @@ def worker_prospeccao(row):
                         alvo["Empresa Vencedora (Alvo)"] = lista[0].get("nomeRazaoSocialFornecedor", alvo["Empresa Vencedora (Alvo)"])
                         alvo["CNPJ do Alvo"] = lista[0].get("niFornecedor", alvo["CNPJ do Alvo"])
                         val = lista[0].get("valorTotalHomologado")
-                        if val: 
-                            alvo["Valor Arrematado"] = float(val)
-            except: 
-                pass
+                        if val: alvo["Valor Arrematado"] = float(val)
+            except: pass
     return alvo
 
 def worker_rss(fase, tema, periodo_dias):
@@ -322,8 +316,7 @@ def worker_rss(fase, tema, periodo_dias):
                 data_pub = item.find('pubDate').text if item.find('pubDate') is not None else ""
                 try: 
                     dt_str = datetime.strptime(data_pub, "%a, %d %b %Y %H:%M:%S %Z").strftime("%d/%m/%Y %H:%M")
-                except: 
-                    dt_str = data_pub
+                except: dt_str = data_pub
                 
                 titulo = item.find('title').text if item.find('title') is not None else "Sem Título"
                 link = item.find('link').text if item.find('link') is not None else ""
@@ -336,8 +329,7 @@ def worker_rss(fase, tema, periodo_dias):
                     "Link da Notícia": link,
                     "Anotações Equipe": ""
                 })
-    except: 
-        pass
+    except: pass
     return pd.DataFrame(res)
 
 # --- 4. FRONTEND STREAMLIT ---
@@ -362,7 +354,7 @@ aba_busca, aba_interesse, aba_rastreador, aba_prospeccao, aba_noticias = st.tabs
 ])
 
 # ==========================================
-# ABA 1: BUSCA 
+# ABA 1: BUSCA INICIAL TURBO
 # ==========================================
 with aba_busca:
     col_filtros, col_resultados = st.columns([1, 3], gap="large")
@@ -387,10 +379,10 @@ with aba_busca:
 
     with col_resultados:
         if buscar:
-            with st.spinner("Varrendo servidores..."):
+            with st.spinner("🚀 Varrendo servidores em alta velocidade (Multithread)..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
                 if erros: 
-                    st.warning(f"Avisos de rede: {', '.join(erros)}")
+                    st.warning(f"Avisos de rede em alguns blocos de datas: {', '.join(erros)}")
                 
                 if dados_brutos:
                     st.session_state['resultados_busca'] = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados)
@@ -429,7 +421,7 @@ with aba_busca:
                     else:
                         st.warning("Selecione pelo menos uma licitação.")
             else: 
-                st.info("Nenhuma licitação encontrada.")
+                st.info("Nenhuma licitação encontrada ou bloqueio temporário do governo.")
 
 # ==========================================
 # ABA 2: UNIFICADOR DE INTERESSES
@@ -467,11 +459,11 @@ with aba_interesse:
         st.info("Sua lista de interesses está vazia.")
 
 # ==========================================
-# ABA 3: RASTREADOR (TURBO MULTITHREAD)
+# ABA 3: RASTREADOR TURBO
 # ==========================================
 with aba_rastreador:
     st.subheader("📈 Rastreador de Status")
-    st.markdown("Suba sua planilha. O robô usará **Multithreading (Múltiplos Robôs)** para atualizar dezenas de processos em segundos.")
+    st.markdown("Suba sua planilha. O robô usará **Multithreading** para atualizar dezenas de processos em segundos.")
     arquivo_rastreio = st.file_uploader("📂 Upload para Rastreio (.xlsx)", type=["xlsx"], key="up_rastreio")
     
     if arquivo_rastreio and st.button("🔄 Rastrear Turbo"):
@@ -484,7 +476,6 @@ with aba_rastreador:
                 with st.spinner("Atualizando via Múltiplos Robôs simultâneos..."):
                     with ThreadPoolExecutor(max_workers=10) as executor:
                         futuros = [executor.submit(worker_rastrear, idx, row) for idx, row in df_rastrear.iterrows()]
-                        
                         for i, futuro in enumerate(as_completed(futuros)):
                             res = futuro.result()
                             df_rastrear.at[res["index"], "Status/Fase"] = res["Status/Fase"]
@@ -506,13 +497,11 @@ with aba_rastreador:
                     "ASA_Rastreada.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-            else:
-                st.error("A coluna 'Link' não foi encontrada na planilha.")
-        except Exception as e:
-            st.error(f"Erro ao processar: {e}")
+            else: st.error("A coluna 'Link' não foi encontrada na planilha.")
+        except Exception as e: st.error(f"Erro ao processar: {e}")
 
 # ==========================================
-# ABA 4: RADAR DE PROSPECÇÃO (TURBO MULTITHREAD)
+# ABA 4: RADAR DE PROSPECÇÃO TURBO
 # ==========================================
 with aba_prospeccao:
     st.subheader("🎯 Radar de Prospecção de Clientes")
@@ -530,7 +519,6 @@ with aba_prospeccao:
                 with st.spinner("Investigando Contratos e Atas em Paralelo..."):
                     with ThreadPoolExecutor(max_workers=10) as executor:
                         futuros = [executor.submit(worker_prospeccao, row) for _, row in df_prosp.iterrows()]
-                        
                         for i, futuro in enumerate(as_completed(futuros)):
                             alvos.append(futuro.result())
                             progresso.progress((i + 1) / total)
@@ -542,7 +530,6 @@ with aba_prospeccao:
                 
                 if not df_limpo.empty:
                     st.dataframe(df_limpo.style.format({"Valor Arrematado": "R$ {:,.2f}"}), hide_index=True)
-                    
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as w:
                         df_limpo.to_excel(w, index=False, sheet_name='Radar de Prospecção ASA')
@@ -554,15 +541,16 @@ with aba_prospeccao:
                         f"Alvos_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-                else:
-                    st.info("Ainda não há vencedores listados para os processos desta planilha.")
-            else:
-                st.error("A coluna 'Link' não foi encontrada.")
-        except Exception as e:
-            st.error(f"Erro ao processar: {e}")
+                else: st.info("Ainda não há vencedores listados para os processos desta planilha.")
+            else: st.error("A coluna 'Link' não foi encontrada.")
+        except Exception as e: st.error(f"Erro ao processar: {e}")
 
 # ==========================================
-# ABA 5: CLIPPING DE NOTÍCIAS (TURBO MULTITHREAD)
+# ABA 5: CLIPPING DE NOTÍCIAS TURBO
+# ==========================================
+with aba_noticias:
+   # ==========================================
+# ABA 5: CLIPPING DE NOTÍCIAS TURBO
 # ==========================================
 with aba_noticias:
     st.subheader("🌐 Radar de Mercado Inteligente (Busca 360º)")
@@ -572,15 +560,15 @@ with aba_noticias:
     lista_temas = ['"Concessão" OR "PPP"', '"Saneamento"', '"Rodovia" OR "Pedágio"', '"Iluminação Pública"', '"Privatização"']
     
     col1, col2, col3 = st.columns(3)
-    fases_selecionadas = col1.multiselect("Fases/Atos:", lista_fases, default=lista_fases)
-    temas_selecionados = col2.multiselect("Setores/Temas:", lista_temas, default=lista_temas)
+    fases_alvo = col1.multiselect("Fases/Atos:", lista_fases, default=lista_fases)
+    temas_alvo = col2.multiselect("Setores/Temas:", lista_temas, default=lista_temas)
     filtro_tempo = col3.selectbox("Tempo de Busca:", [("Últimas 24h", 1), ("Última Semana", 7), ("Último Mês", 30)], format_func=lambda x: x[0])
     
     arquivo_clipping = st.file_uploader("📂 Opcional: Upload do Clipping Antigo (.xlsx)", type=["xlsx"])
         
     if st.button("📰 Iniciar Varredura 360º Turbo"):
-        if fases_selecionadas and temas_selecionadas:
-            total_buscas = len(fases_selecionadas) * len(temas_selecionadas)
+        if fases_alvo and temas_alvo:
+            total_buscas = len(fases_alvo) * len(temas_alvo)
             progresso_news = st.progress(0)
             dfs_noticias = []
             
@@ -588,13 +576,11 @@ with aba_noticias:
                 with ThreadPoolExecutor(max_workers=10) as executor:
                     futuros = [
                         executor.submit(worker_rss, fase, tema, filtro_tempo[1]) 
-                        for fase in fases_selecionadas 
-                        for tema in temas_selecionadas
+                        for fase in fases_alvo for tema in temas_alvo
                     ]
-                    
                     for i, futuro in enumerate(as_completed(futuros)):
                         resultado_df = futuro.result()
-                        if not resultado_df.empty:
+                        if not resultado_df.empty: 
                             dfs_noticias.append(resultado_df)
                         progresso_news.progress((i + 1) / total_buscas)
                         
@@ -607,7 +593,7 @@ with aba_noticias:
                         df_antigo = pd.read_excel(arquivo_clipping)
                         df_final = pd.concat([df_antigo, df_novas]).drop_duplicates(subset=["Link da Notícia"], keep="first")
                         st.success("✅ Base unida preservando anotações antigas!")
-                    except:
+                    except: 
                         st.error("Erro ao ler a planilha de clipping antiga.")
                         
                 st.success(f"✅ {len(df_final)} notícias consolidadas!")
@@ -624,7 +610,7 @@ with aba_noticias:
                     file_name=f"Clipping_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-            else:
+            else: 
                 st.warning("Nenhuma notícia relevante encontrada para essas combinações no período selecionado.")
-        else:
+        else: 
             st.warning("Por favor, selecione pelo menos uma Fase e um Tema para realizar a busca.")
