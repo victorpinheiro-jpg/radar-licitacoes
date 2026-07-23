@@ -115,7 +115,7 @@ def aplicar_estilo_excel(writer, df, sheet_name):
         elif any(x in status_val for x in ["homolog", "revogad", "cancelad", "fracassad", "desert"]): 
             fundo_linha = cor_morta
             
-        if "Radar de Prospecção" in sheet_name: 
+        if "Radar de Prospecção" in sheet_name or "Vencedores" in sheet_name: 
             if row_idx % 2 == 0:
                 fundo_linha = cor_alvo 
             else:
@@ -300,17 +300,13 @@ def worker_rastrear(index, row):
     return resultado
 
 def worker_prospeccao(row):
-    link = str(row["Link"]).strip()
-    alvo = {
-        "Identificação": row.get("Identificação", ""), 
-        "Órgão": row.get("Órgão", ""), 
-        "Empresa Vencedora (Alvo)": "Ainda sem vencedor publicado", 
-        "CNPJ do Alvo": "-", 
-        "Valor Arrematado": row.get("Valor Estimado", 0.0), 
-        "Objeto": row.get("Objeto", ""), 
-        "Anotações Equipe": "", 
-        "Link": link
-    }
+    alvo = row.to_dict() 
+    link = str(alvo.get("Link", "")).strip()
+    
+    alvo["Empresa Vencedora (Alvo)"] = "Ainda sem vencedor publicado"
+    alvo["CNPJ do Alvo"] = "-"
+    alvo["Valor Arrematado"] = alvo.get("Valor Estimado", 0.0)
+    
     match = re.search(r"editais/(\d+)/(\d+)/(\d+)", link)
     if match:
         cnpj, ano, seq = match.groups()
@@ -352,7 +348,6 @@ def worker_rss(fase, tema, periodo_dias):
     url = f"https://news.google.com/rss/search?q={query}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     res = []
     
-    # Filtro obrigatório: Se a notícia não tiver um destes termos, será considerada lixo e descartada.
     termos_obrigatorios = [
         "licita", "concess", "ppp", "público-privada", "saneamento", "rodovia", 
         "pedágio", "leilão", "leilao", "privatiza", "pública", "pmi", "edital", 
@@ -367,7 +362,6 @@ def worker_rss(fase, tema, periodo_dias):
                 titulo = item.find('title').text if item.find('title') is not None else ""
                 titulo_lower = titulo.lower()
                 
-                # Aplicação do Filtro Inteligente
                 if not any(termo in titulo_lower for termo in termos_obrigatorios):
                     continue 
 
@@ -418,71 +412,45 @@ aba_busca, aba_interesse, aba_rastreador, aba_prospeccao, aba_noticias = st.tabs
 # ==========================================
 with aba_busca:
     col_filtros, col_resultados = st.columns([1, 3], gap="large")
-    
     with col_filtros:
         st.subheader("🎯 Parâmetros Regionais")
         estados_selecionados = st.multiselect("Estados de Interesse (UF):", LISTA_UFS)
-        
         st.subheader("📅 Período")
         hoje = datetime.now()
         data_inicio = st.date_input("Data Inicial:", value=hoje - timedelta(days=15))
         data_fim = st.date_input("Data Final:", value=hoje)
-        
         st.subheader("🔎 Filtros Avançados")
         palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
-        
         st.subheader("💰 Filtro Financeiro")
         valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
-        
         buscar = st.button("🔍 Mapear Oportunidades")
 
     with col_resultados:
         if buscar:
-            with st.spinner("🔍 Varrendo servidores do Governo (Modo Anti-Bloqueio)..."):
+            with st.spinner("🔍 Varrendo servidores do Governo em modo seguro..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
-                if erros: 
-                    st.warning(f"Avisos de rede ou lentidão no PNCP: {', '.join(erros)}")
-                
-                if dados_brutos:
-                    st.session_state['resultados_busca'] = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados)
-                else:
-                    st.session_state['resultados_busca'] = pd.DataFrame()
-                
+                if erros: st.warning(f"Avisos de rede: {', '.join(erros)}")
+                st.session_state['resultados_busca'] = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados) if dados_brutos else pd.DataFrame()
                 st.session_state['busca_realizada'] = True
 
         if st.session_state['busca_realizada']:
             df_atual = st.session_state['resultados_busca']
             if not df_atual.empty:
-                if "Acompanhar" not in df_atual.columns: 
-                    df_atual.insert(0, "Acompanhar", False)
-                
+                if "Acompanhar" not in df_atual.columns: df_atual.insert(0, "Acompanhar", False)
                 st.write("### 📌 Resultados da Busca")
                 m1, m2 = st.columns(2)
                 m1.metric("Encontradas", f"{len(df_atual)}")
                 m2.metric("Volume", f"R$ {df_atual['Valor Estimado'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-                
-                df_editado = st.data_editor(
-                    df_atual, 
-                    column_config={
-                        "Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False), 
-                        "Link": st.column_config.LinkColumn("Edital", display_text="Acessar")
-                    }, 
-                    disabled=["Identificação", "Status/Fase", "Dias Restantes", "Data da Sessão", "Última Atualização", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação", "Anotações Equipe"],
-                    hide_index=True, 
-                    use_container_width=True
-                )
-                
+                df_editado = st.data_editor(df_atual, column_config={"Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False), "Link": st.column_config.LinkColumn("Edital", display_text="Acessar")}, disabled=["Identificação", "Status/Fase", "Dias Restantes", "Data da Sessão", "Última Atualização", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação", "Anotações Equipe"], hide_index=True, use_container_width=True)
                 if st.button("💾 Enviar selecionadas para Aba de Interesse"):
                     selecionadas = df_editado[df_editado["Acompanhar"] == True].drop(columns=["Acompanhar"])
                     if not selecionadas.empty:
                         st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Identificação"])
                         st.success("Salvas! Vá para a aba de Interesse.")
-                    else:
-                        st.warning("Selecione pelo menos uma licitação.")
-            else: 
-                st.info("Nenhuma licitação encontrada nos filtros estipulados.")
+                    else: st.warning("Selecione pelo menos uma licitação.")
+            else: st.info("Nenhuma licitação encontrada nos filtros estipulados.")
 
 # ==========================================
 # ABA 2: UNIFICADOR DE INTERESSES
@@ -491,89 +459,56 @@ with aba_interesse:
     st.subheader("⭐ Unificador de Interesses")
     arquivo_base = st.file_uploader("📂 Upload Planilha Mestre (.xlsx)", type=["xlsx"], key="up_mestre")
     df_export = st.session_state['licitacoes_salvas'].copy()
-    
     if arquivo_base:
-        try: 
-            df_antigo = pd.read_excel(arquivo_base)
-            df_export = pd.concat([df_antigo, df_export]).drop_duplicates(subset=["Identificação"], keep="last")
-            st.success("Planilha base unida com as seleções atuais.")
-        except: 
-            st.error("Erro na leitura do arquivo.")
-            
+        try: df_export = pd.concat([pd.read_excel(arquivo_base), df_export]).drop_duplicates(subset=["Identificação"], keep="last")
+        except: st.error("Erro na leitura.")
     if not df_export.empty:
         st.dataframe(df_export.style.format({"Valor Estimado": "R$ {:,.2f}"}), hide_index=True, use_container_width=True)
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as w:
-            df_export.to_excel(w, index=False, sheet_name='Base ASA')
-            aplicar_estilo_excel(w, df_export, 'Base ASA')
-            
-        st.download_button(
-            "📥 Baixar Planilha Mestre", 
-            buffer.getvalue(), 
-            f"Master_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            df_export.to_excel(w, index=False, sheet_name='Base ASA'); aplicar_estilo_excel(w, df_export, 'Base ASA')
+        st.download_button("📥 Baixar Planilha Mestre", buffer.getvalue(), f"Master_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx")
         if st.button("🗑️ Limpar Lista Temporária"):
             st.session_state['licitacoes_salvas'] = pd.DataFrame()
             st.rerun()
-    else:
-        st.info("Sua lista de interesses está vazia.")
+    else: st.info("Sua lista está vazia.")
 
 # ==========================================
 # ABA 3: RASTREADOR TURBO
 # ==========================================
 with aba_rastreador:
     st.subheader("📈 Rastreador de Status")
-    st.markdown("Suba sua planilha. O robô usará **Multithreading** para atualizar processos em segundos.")
-    
     arquivo_rastreio = st.file_uploader("📂 Upload para Rastreio (.xlsx)", type=["xlsx"], key="up_rastreio")
-    
     if arquivo_rastreio and st.button("🔄 Rastrear Turbo"):
-        try:
-            df_rastrear = pd.read_excel(arquivo_rastreio)
-            if "Link" in df_rastrear.columns:
-                progresso = st.progress(0)
-                total = len(df_rastrear)
-                
-                with st.spinner("Atualizando via Múltiplos Robôs simultâneos..."):
-                    with ThreadPoolExecutor(max_workers=10) as executor:
-                        futuros = [executor.submit(worker_rastrear, idx, row) for idx, row in df_rastrear.iterrows()]
-                        for i, futuro in enumerate(as_completed(futuros)):
-                            res = futuro.result()
-                            df_rastrear.at[res["index"], "Status/Fase"] = res["Status/Fase"]
-                            df_rastrear.at[res["index"], "Última Atualização"] = res["Última Atualização"]
-                            df_rastrear.at[res["index"], "Data da Sessão"] = res["Data da Sessão"]
-                            df_rastrear.at[res["index"], "Dias Restantes"] = res["Dias Restantes"]
-                            progresso.progress((i + 1) / total)
-                            
-                st.success("✅ Rastreamento Turbo concluído!")
-                
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as w:
-                    df_rastrear.to_excel(w, index=False, sheet_name='Base Rastreada')
-                    aplicar_estilo_excel(w, df_rastrear, 'Base Rastreada')
-                    
-                st.download_button(
-                    "📥 Baixar Base Atualizada", 
-                    buffer.getvalue(), 
-                    "ASA_Rastreada.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            else: 
-                st.error("A coluna 'Link' não foi encontrada na planilha.")
-        except Exception as e: 
-            st.error(f"Erro ao processar: {e}")
+        df_rastrear = pd.read_excel(arquivo_rastreio)
+        if "Link" in df_rastrear.columns:
+            progresso = st.progress(0)
+            total = len(df_rastrear)
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futuros = [executor.submit(worker_rastrear, idx, row) for idx, row in df_rastrear.iterrows()]
+                for i, futuro in enumerate(as_completed(futuros)):
+                    res = futuro.result()
+                    df_rastrear.at[res["index"], "Status/Fase"] = res["Status/Fase"]
+                    df_rastrear.at[res["index"], "Última Atualização"] = res["Última Atualização"]
+                    df_rastrear.at[res["index"], "Data da Sessão"] = res["Data da Sessão"]
+                    df_rastrear.at[res["index"], "Dias Restantes"] = res["Dias Restantes"]
+                    progresso.progress((i + 1) / total)
+            st.success("✅ Concluído!")
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as w:
+                df_rastrear.to_excel(w, index=False, sheet_name='Base Rastreada'); aplicar_estilo_excel(w, df_rastrear, 'Base Rastreada')
+            st.download_button("📥 Baixar Base Atualizada", buffer.getvalue(), "ASA_Rastreada.xlsx")
 
 # ==========================================
-# ABA 4: RADAR DE PROSPECÇÃO TURBO
+# ABA 4: RADAR DE PROSPECÇÃO (CRM - DUAS ABAS - EM TRÂNSITO PRIMEIRO)
 # ==========================================
 with aba_prospeccao:
-    st.subheader("🎯 Radar de Prospecção de Clientes")
-    st.markdown("Suba sua planilha. O robô fará uma varredura para prospectar empresas vencedoras.")
+    st.subheader("🎯 Funil de Prospecção (CRM)")
+    st.markdown("Suba sua planilha. O robô vai criar um novo arquivo Excel com **Duas Abas**: a primeira com as que estão 'Em Trânsito' e a segunda com os 'Vencedores'.")
     
-    arquivo_prospeccao = st.file_uploader("📂 Upload para Prospecção (.xlsx)", type=["xlsx"], key="up_prospeccao")
+    arquivo_prospeccao = st.file_uploader("📂 Upload da Planilha Mestre (.xlsx)", type=["xlsx"], key="up_prospeccao")
     
-    if arquivo_prospeccao and st.button("🔎 Gerar Leads Turbo"):
+    if arquivo_prospeccao and st.button("🔎 Organizar Pipeline Comercial"):
         try:
             df_prosp = pd.read_excel(arquivo_prospeccao)
             if "Link" in df_prosp.columns:
@@ -581,45 +516,54 @@ with aba_prospeccao:
                 total = len(df_prosp)
                 alvos = []
                 
-                with st.spinner("Investigando Contratos e Atas em Paralelo..."):
+                with st.spinner("Classificando leads no funil..."):
                     with ThreadPoolExecutor(max_workers=10) as executor:
                         futuros = [executor.submit(worker_prospeccao, row) for _, row in df_prosp.iterrows()]
                         for i, futuro in enumerate(as_completed(futuros)):
                             alvos.append(futuro.result())
                             progresso.progress((i + 1) / total)
                 
-                df_alvos = pd.DataFrame(alvos)
-                df_limpo = df_alvos[df_alvos["Empresa Vencedora (Alvo)"] != "Ainda sem vencedor publicado"]
+                df_resultado = pd.DataFrame(alvos)
+                df_vencedores = df_resultado[df_resultado["Empresa Vencedora (Alvo)"] != "Ainda sem vencedor publicado"]
+                df_transito = df_resultado[df_resultado["Empresa Vencedora (Alvo)"] == "Ainda sem vencedor publicado"]
                 
-                st.success(f"🎯 Varredura concluída! {len(df_limpo)} alvos encontrados.")
+                st.success(f"🎯 Concluído! O robô separou {len(df_transito)} aguardando e {len(df_vencedores)} alvos prontos.")
                 
-                if not df_limpo.empty:
-                    st.dataframe(df_limpo.style.format({"Valor Arrematado": "R$ {:,.2f}"}), hide_index=True)
-                    
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as w:
-                        df_limpo.to_excel(w, index=False, sheet_name='Radar de Prospecção ASA')
-                        aplicar_estilo_excel(w, df_limpo, 'Radar de Prospecção ASA')
-                        
-                    st.download_button(
-                        "📥 Baixar Relatório de Alvos", 
-                        buffer.getvalue(), 
-                        f"Alvos_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                st.write("### 🏆 Vencedores Revelados")
+                if not df_vencedores.empty:
+                    st.dataframe(df_vencedores.style.format({"Valor Estimado": "R$ {:,.2f}", "Valor Arrematado": "R$ {:,.2f}"}), hide_index=True)
                 else: 
-                    st.info("Ainda não há vencedores listados para os processos desta planilha.")
-            else: 
-                st.error("A coluna 'Link' não foi encontrada.")
-        except Exception as e: 
-            st.error(f"Erro ao processar: {e}")
+                    st.info("Nenhuma licitação virou contrato ainda.")
+                    
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as w:
+                    # Invertendo a ordem: Em Trânsito é gravada PRIMEIRO para aparecer como Aba 1 no Excel
+                    if not df_transito.empty:
+                        df_transito.to_excel(w, index=False, sheet_name='Em Trânsito')
+                        aplicar_estilo_excel(w, df_transito, 'Em Trânsito')
+                        
+                    if not df_vencedores.empty:
+                        df_vencedores.to_excel(w, index=False, sheet_name='Vencedores (Alvos)')
+                        aplicar_estilo_excel(w, df_vencedores, 'Vencedores (Alvos)')
+                        
+                    if df_vencedores.empty and df_transito.empty:
+                        pd.DataFrame().to_excel(w, index=False, sheet_name='Vazio')
+                        
+                st.download_button(
+                    "📥 Baixar Pipeline Completo (Com Abas)", 
+                    buffer.getvalue(), 
+                    f"Pipeline_Prospeccao_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else: st.error("A coluna 'Link' não foi encontrada.")
+        except Exception as e: st.error(f"Erro ao processar: {e}")
 
 # ==========================================
 # ABA 5: CLIPPING DE NOTÍCIAS INTELIGENTE
 # ==========================================
 with aba_noticias:
-    st.subheader("🌐 Radar de Mercado Inteligente (Busca 360º)")
-    st.markdown("O robô faz cruzamentos e aplica **Inteligência Artificial de Filtragem** para remover notícias de acidentes e focar só em projetos e licitações.")
+    st.subheader("🌐 Radar de Mercado Inteligente (Filtro Anti-Lixo Ativo)")
+    st.markdown("O robô vasculha notícias e aplica uma **filtragem semântica local** para focar em infraestrutura.")
     
     lista_fases = ['Consulta Pública', 'Audiência Pública', 'Manifestação de Interesse', 'Aviso de Licitação', 'Estudos Técnicos Preliminares']
     lista_temas = ['Concessão', 'PPP', 'Saneamento', 'Rodovia', 'Pedágio', 'Iluminação Pública', 'Privatização']
