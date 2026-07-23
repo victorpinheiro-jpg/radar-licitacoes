@@ -10,7 +10,6 @@ import xml.etree.ElementTree as ET
 import urllib.parse
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import random
 
 # --- 1. CONFIGURAÇÃO VISUAL E IDENTIDADE ASA ---
 st.set_page_config(page_title="ASA | Radar de Infraestrutura", page_icon="⚖️", layout="wide")
@@ -154,7 +153,53 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     worksheet.freeze_panes = 'A2'
     worksheet.auto_filter.ref = worksheet.dimensions
 
-# --- 2. MOTORES DE BUSCA (Aba 1 Segura e Sequencial Anti-Bloqueio) ---
+# --- 2. NOVA LÓGICA DE MANIPULAÇÃO DO PIPELINE ÚNICO ---
+def load_master_excel(file_buffer):
+    """Lê todas as abas de uma planilha e consolida sem perder dados."""
+    try:
+        xls = pd.read_excel(file_buffer, sheet_name=None)
+        # Junta todas as abas (Em Trânsito, Vencedores, etc) que não estejam vazias
+        df = pd.concat([v for k, v in xls.items() if not v.empty], ignore_index=True)
+        if df.empty:
+            return pd.DataFrame()
+        
+        # Garante que as colunas críticas de funil existam para não quebrar a lógica
+        cols_defaults = {
+            "Empresa Vencedora (Alvo)": "Ainda sem vencedor publicado",
+            "CNPJ do Alvo": "-",
+            "Valor Arrematado": 0.0
+        }
+        for col, val in cols_defaults.items():
+            if col not in df.columns:
+                df[col] = val
+            df[col] = df[col].fillna(val)
+            
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+def gerar_excel_pipeline(df_master):
+    """Gera o arquivo final sempre preservando a estrutura de abas do CRM."""
+    # Separa quem já tem vencedor de quem não tem
+    df_vencedores = df_master[df_master["Empresa Vencedora (Alvo)"] != "Ainda sem vencedor publicado"].copy()
+    df_transito = df_master[df_master["Empresa Vencedora (Alvo)"] == "Ainda sem vencedor publicado"].copy()
+    
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as w:
+        if not df_transito.empty:
+            df_transito.to_excel(w, index=False, sheet_name='Em Trânsito')
+            aplicar_estilo_excel(w, df_transito, 'Em Trânsito')
+            
+        if not df_vencedores.empty:
+            df_vencedores.to_excel(w, index=False, sheet_name='Vencedores (Alvos)')
+            aplicar_estilo_excel(w, df_vencedores, 'Vencedores (Alvos)')
+            
+        if df_vencedores.empty and df_transito.empty:
+            pd.DataFrame().to_excel(w, index=False, sheet_name='Vazio')
+            
+    return buffer, len(df_transito), len(df_vencedores)
+
+# --- 3. MOTORES DE BUSCA (Governo e APIs) ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -202,7 +247,6 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
             if not sucesso: 
                 erros.append(f"{modalidade} (bloco {str_inicio})")
             
-            # Pausa humana para evitar Shadowban do Governo
             time.sleep(1.0) 
             
     return todos_resultados, list(set(erros))
@@ -271,7 +315,7 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
             
     return pd.DataFrame(resultados)
 
-# --- WORKERS PARA RASTREIO, B2B E CLIPPING (VELOCIDADE MULTITHREAD) ---
+# --- WORKERS DE PROCESSAMENTO PARALELO ---
 def worker_rastrear(index, row):
     link = str(row["Link"]).strip()
     resultado = {
@@ -303,9 +347,10 @@ def worker_prospeccao(row):
     alvo = row.to_dict() 
     link = str(alvo.get("Link", "")).strip()
     
+    # CORREÇÃO APLICADA: Valor zera para quem está em trânsito
     alvo["Empresa Vencedora (Alvo)"] = "Ainda sem vencedor publicado"
     alvo["CNPJ do Alvo"] = "-"
-    alvo["Valor Arrematado"] = alvo.get("Valor Estimado", 0.0)
+    alvo["Valor Arrematado"] = 0.0 
     
     match = re.search(r"editais/(\d+)/(\d+)/(\d+)", link)
     if match:
@@ -342,7 +387,6 @@ def worker_prospeccao(row):
     return alvo
 
 def worker_rss(fase, tema, periodo_dias):
-    """ Varredura de Notícias com Filtro Inteligente Local """
     query_str = f'"{fase}" AND "{tema}" when:{periodo_dias}d'
     query = urllib.parse.quote(query_str)
     url = f"https://news.google.com/rss/search?q={query}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
@@ -401,10 +445,10 @@ st.divider()
 
 aba_busca, aba_interesse, aba_rastreador, aba_prospeccao, aba_noticias = st.tabs([
     "🔍 Nova Busca", 
-    "⭐ Unificador", 
+    "⭐ Unificador (Pipeline)", 
     "📈 Rastreador", 
     "🎯 Radar de Prospecção", 
-    "🌐 Radar de Prévias (360º)"
+    "🌐 Radar de Prévias"
 ])
 
 # ==========================================
@@ -412,16 +456,20 @@ aba_busca, aba_interesse, aba_rastreador, aba_prospeccao, aba_noticias = st.tabs
 # ==========================================
 with aba_busca:
     col_filtros, col_resultados = st.columns([1, 3], gap="large")
+    
     with col_filtros:
         st.subheader("🎯 Parâmetros Regionais")
         estados_selecionados = st.multiselect("Estados de Interesse (UF):", LISTA_UFS)
+        
         st.subheader("📅 Período")
         hoje = datetime.now()
         data_inicio = st.date_input("Data Inicial:", value=hoje - timedelta(days=15))
         data_fim = st.date_input("Data Final:", value=hoje)
+        
         st.subheader("🔎 Filtros Avançados")
         palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
+        
         st.subheader("💰 Filtro Financeiro")
         valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
@@ -431,132 +479,173 @@ with aba_busca:
         if buscar:
             with st.spinner("🔍 Varrendo servidores do Governo em modo seguro..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
-                if erros: st.warning(f"Avisos de rede: {', '.join(erros)}")
-                st.session_state['resultados_busca'] = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados) if dados_brutos else pd.DataFrame()
+                if erros: 
+                    st.warning(f"Avisos de rede ou lentidão no PNCP: {', '.join(erros)}")
+                
+                if dados_brutos:
+                    st.session_state['resultados_busca'] = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados)
+                else:
+                    st.session_state['resultados_busca'] = pd.DataFrame()
+                
                 st.session_state['busca_realizada'] = True
 
         if st.session_state['busca_realizada']:
             df_atual = st.session_state['resultados_busca']
             if not df_atual.empty:
-                if "Acompanhar" not in df_atual.columns: df_atual.insert(0, "Acompanhar", False)
+                if "Acompanhar" not in df_atual.columns: 
+                    df_atual.insert(0, "Acompanhar", False)
+                
                 st.write("### 📌 Resultados da Busca")
                 m1, m2 = st.columns(2)
                 m1.metric("Encontradas", f"{len(df_atual)}")
                 m2.metric("Volume", f"R$ {df_atual['Valor Estimado'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-                df_editado = st.data_editor(df_atual, column_config={"Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False), "Link": st.column_config.LinkColumn("Edital", display_text="Acessar")}, disabled=["Identificação", "Status/Fase", "Dias Restantes", "Data da Sessão", "Última Atualização", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação", "Anotações Equipe"], hide_index=True, use_container_width=True)
-                if st.button("💾 Enviar selecionadas para Aba de Interesse"):
+                
+                df_editado = st.data_editor(
+                    df_atual, 
+                    column_config={
+                        "Acompanhar": st.column_config.CheckboxColumn("⭐ Salvar", default=False), 
+                        "Link": st.column_config.LinkColumn("Edital", display_text="Acessar")
+                    }, 
+                    disabled=["Identificação", "Status/Fase", "Dias Restantes", "Data da Sessão", "Última Atualização", "UF", "Órgão", "Modalidade", "Objeto", "Valor Estimado", "Data Publicação", "Anotações Equipe"],
+                    hide_index=True, 
+                    use_container_width=True
+                )
+                
+                if st.button("💾 Enviar selecionadas para o Pipeline (Aba Unificador)"):
                     selecionadas = df_editado[df_editado["Acompanhar"] == True].drop(columns=["Acompanhar"])
                     if not selecionadas.empty:
                         st.session_state['licitacoes_salvas'] = pd.concat([st.session_state['licitacoes_salvas'], selecionadas]).drop_duplicates(subset=["Identificação"])
-                        st.success("Salvas! Vá para a aba de Interesse.")
-                    else: st.warning("Selecione pelo menos uma licitação.")
-            else: st.info("Nenhuma licitação encontrada nos filtros estipulados.")
+                        st.success("Salvas! Vá para a aba Unificador para consolidar com sua planilha antiga.")
+                    else:
+                        st.warning("Selecione pelo menos uma licitação.")
+            else: 
+                st.info("Nenhuma licitação encontrada nos filtros estipulados.")
 
 # ==========================================
-# ABA 2: UNIFICADOR DE INTERESSES
+# ABA 2: UNIFICADOR (O CRM COMPLETO)
 # ==========================================
 with aba_interesse:
-    st.subheader("⭐ Unificador de Interesses")
-    arquivo_base = st.file_uploader("📂 Upload Planilha Mestre (.xlsx)", type=["xlsx"], key="up_mestre")
+    st.subheader("⭐ Consolidar Pipeline de Vendas")
+    st.markdown("Faça upload da sua Planilha Mestre (mesmo que tenha múltiplas abas). O robô vai adicionar suas novas seleções sem perder **nenhuma anotação antiga** ou ganhador que já existia.")
+    
+    arquivo_base = st.file_uploader("📂 Upload do Pipeline Master (.xlsx)", type=["xlsx"], key="up_mestre")
     df_export = st.session_state['licitacoes_salvas'].copy()
-    if arquivo_base:
-        try: df_export = pd.concat([pd.read_excel(arquivo_base), df_export]).drop_duplicates(subset=["Identificação"], keep="last")
-        except: st.error("Erro na leitura.")
+    
+    # Prepara as licitações novas para entrarem no padrão CRM
     if not df_export.empty:
-        st.dataframe(df_export.style.format({"Valor Estimado": "R$ {:,.2f}"}), hide_index=True, use_container_width=True)
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as w:
-            df_export.to_excel(w, index=False, sheet_name='Base ASA'); aplicar_estilo_excel(w, df_export, 'Base ASA')
-        st.download_button("📥 Baixar Planilha Mestre", buffer.getvalue(), f"Master_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx")
-        if st.button("🗑️ Limpar Lista Temporária"):
+        for col, default_val in [("Empresa Vencedora (Alvo)", "Ainda sem vencedor publicado"), 
+                                 ("CNPJ do Alvo", "-"), 
+                                 ("Valor Arrematado", 0.0)]:
+            if col not in df_export.columns:
+                df_export[col] = default_val
+    
+    if arquivo_base:
+        df_antigo = load_master_excel(arquivo_base)
+        if not df_antigo.empty:
+            # Junta o antigo com o novo. "keep='first'" garante que se a licitação já estava no arquivo do usuário (com anotações), a versão do usuário prevalece.
+            df_export = pd.concat([df_antigo, df_export]).drop_duplicates(subset=["Identificação"], keep="first")
+            st.success("✅ Base antiga consolidada com as novas buscas!")
+            
+    if not df_export.empty:
+        st.write(f"Total de registros na sua base: **{len(df_export)}**")
+        buffer, _, _ = gerar_excel_pipeline(df_export)
+        st.download_button(
+            "📥 Baixar Pipeline Master Atualizado", 
+            buffer.getvalue(), 
+            f"Pipeline_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        if st.button("🗑️ Limpar Sessão Temporária"):
             st.session_state['licitacoes_salvas'] = pd.DataFrame()
             st.rerun()
-    else: st.info("Sua lista está vazia.")
 
 # ==========================================
 # ABA 3: RASTREADOR TURBO
 # ==========================================
 with aba_rastreador:
     st.subheader("📈 Rastreador de Status")
-    arquivo_rastreio = st.file_uploader("📂 Upload para Rastreio (.xlsx)", type=["xlsx"], key="up_rastreio")
+    st.markdown("O Rastreador **lê todas as abas** do seu Pipeline Master, checa se as datas ou fases mudaram, e devolve a planilha preservando sua estrutura e anotações.")
+    
+    arquivo_rastreio = st.file_uploader("📂 Upload do Pipeline Master (.xlsx)", type=["xlsx"], key="up_rastreio")
+    
     if arquivo_rastreio and st.button("🔄 Rastrear Turbo"):
-        df_rastrear = pd.read_excel(arquivo_rastreio)
-        if "Link" in df_rastrear.columns:
+        df_rastrear = load_master_excel(arquivo_rastreio)
+        
+        if not df_rastrear.empty and "Link" in df_rastrear.columns:
             progresso = st.progress(0)
             total = len(df_rastrear)
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futuros = [executor.submit(worker_rastrear, idx, row) for idx, row in df_rastrear.iterrows()]
-                for i, futuro in enumerate(as_completed(futuros)):
-                    res = futuro.result()
-                    df_rastrear.at[res["index"], "Status/Fase"] = res["Status/Fase"]
-                    df_rastrear.at[res["index"], "Última Atualização"] = res["Última Atualização"]
-                    df_rastrear.at[res["index"], "Data da Sessão"] = res["Data da Sessão"]
-                    df_rastrear.at[res["index"], "Dias Restantes"] = res["Dias Restantes"]
-                    progresso.progress((i + 1) / total)
-            st.success("✅ Concluído!")
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as w:
-                df_rastrear.to_excel(w, index=False, sheet_name='Base Rastreada'); aplicar_estilo_excel(w, df_rastrear, 'Base Rastreada')
-            st.download_button("📥 Baixar Base Atualizada", buffer.getvalue(), "ASA_Rastreada.xlsx")
+            
+            with st.spinner("Atualizando processos..."):
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futuros = [executor.submit(worker_rastrear, idx, row) for idx, row in df_rastrear.iterrows()]
+                    for i, futuro in enumerate(as_completed(futuros)):
+                        res = futuro.result()
+                        idx = res["index"]
+                        df_rastrear.at[idx, "Status/Fase"] = res["Status/Fase"]
+                        df_rastrear.at[idx, "Última Atualização"] = res["Última Atualização"]
+                        df_rastrear.at[idx, "Data da Sessão"] = res["Data da Sessão"]
+                        df_rastrear.at[idx, "Dias Restantes"] = res["Dias Restantes"]
+                        progresso.progress((i + 1) / total)
+                        
+            st.success("✅ Rastreamento concluído!")
+            buffer, _, _ = gerar_excel_pipeline(df_rastrear)
+            st.download_button(
+                "📥 Baixar Pipeline Rastreado", 
+                buffer.getvalue(), 
+                "Pipeline_ASA_Rastreado.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else: 
+            st.error("Erro ao processar o arquivo. Verifique se as colunas estão corretas.")
 
 # ==========================================
-# ABA 4: RADAR DE PROSPECÇÃO (CRM - DUAS ABAS - EM TRÂNSITO PRIMEIRO)
+# ABA 4: RADAR DE PROSPECÇÃO (O FUNIL INTELIGENTE)
 # ==========================================
 with aba_prospeccao:
-    st.subheader("🎯 Funil de Prospecção (CRM)")
-    st.markdown("Suba sua planilha. O robô vai criar um novo arquivo Excel com **Duas Abas**: a primeira com as que estão 'Em Trânsito' e a segunda com os 'Vencedores'.")
+    st.subheader("🎯 Radar de Prospecção (CRM)")
+    st.markdown("O Radar processa **apenas as licitações 'Em Trânsito'**. Se ele achar novos vencedores, os transfere de aba automaticamente.")
     
-    arquivo_prospeccao = st.file_uploader("📂 Upload da Planilha Mestre (.xlsx)", type=["xlsx"], key="up_prospeccao")
+    arquivo_prospeccao = st.file_uploader("📂 Upload do Pipeline Master (.xlsx)", type=["xlsx"], key="up_prospeccao")
     
-    if arquivo_prospeccao and st.button("🔎 Organizar Pipeline Comercial"):
-        try:
-            df_prosp = pd.read_excel(arquivo_prospeccao)
-            if "Link" in df_prosp.columns:
-                progresso = st.progress(0)
-                total = len(df_prosp)
-                alvos = []
-                
-                with st.spinner("Classificando leads no funil..."):
+    if arquivo_prospeccao and st.button("🔎 Gerar Leads Turbo"):
+        df_prosp = load_master_excel(arquivo_prospeccao)
+        
+        if not df_prosp.empty and "Link" in df_prosp.columns:
+            # Separa quem já estava finalizado de quem precisa ser processado
+            mask_transito = df_prosp["Empresa Vencedora (Alvo)"] == "Ainda sem vencedor publicado"
+            df_to_process = df_prosp[mask_transito].copy()
+            df_already_won = df_prosp[~mask_transito].copy()
+            
+            progresso = st.progress(0)
+            total = len(df_to_process)
+            alvos = []
+            
+            if total > 0:
+                with st.spinner(f"Investigando {total} contratos em andamento no Governo..."):
                     with ThreadPoolExecutor(max_workers=10) as executor:
-                        futuros = [executor.submit(worker_prospeccao, row) for _, row in df_prosp.iterrows()]
+                        futuros = [executor.submit(worker_prospeccao, row) for _, row in df_to_process.iterrows()]
                         for i, futuro in enumerate(as_completed(futuros)):
                             alvos.append(futuro.result())
                             progresso.progress((i + 1) / total)
-                
-                df_resultado = pd.DataFrame(alvos)
-                df_vencedores = df_resultado[df_resultado["Empresa Vencedora (Alvo)"] != "Ainda sem vencedor publicado"]
-                df_transito = df_resultado[df_resultado["Empresa Vencedora (Alvo)"] == "Ainda sem vencedor publicado"]
-                
-                st.success(f"🎯 Concluído! O robô separou {len(df_transito)} aguardando e {len(df_vencedores)} alvos prontos.")
-                
-                st.write("### 🏆 Vencedores Revelados")
-                if not df_vencedores.empty:
-                    st.dataframe(df_vencedores.style.format({"Valor Estimado": "R$ {:,.2f}", "Valor Arrematado": "R$ {:,.2f}"}), hide_index=True)
-                else: 
-                    st.info("Nenhuma licitação virou contrato ainda.")
-                    
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as w:
-                    # Invertendo a ordem: Em Trânsito é gravada PRIMEIRO para aparecer como Aba 1 no Excel
-                    if not df_transito.empty:
-                        df_transito.to_excel(w, index=False, sheet_name='Em Trânsito')
-                        aplicar_estilo_excel(w, df_transito, 'Em Trânsito')
-                        
-                    if not df_vencedores.empty:
-                        df_vencedores.to_excel(w, index=False, sheet_name='Vencedores (Alvos)')
-                        aplicar_estilo_excel(w, df_vencedores, 'Vencedores (Alvos)')
-                        
-                    if df_vencedores.empty and df_transito.empty:
-                        pd.DataFrame().to_excel(w, index=False, sheet_name='Vazio')
-                        
-                st.download_button(
-                    "📥 Baixar Pipeline Completo (Com Abas)", 
-                    buffer.getvalue(), 
-                    f"Pipeline_Prospeccao_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            else: st.error("A coluna 'Link' não foi encontrada.")
-        except Exception as e: st.error(f"Erro ao processar: {e}")
+                            
+            df_processados = pd.DataFrame(alvos) if alvos else pd.DataFrame(columns=df_prosp.columns)
+            
+            # Recombina tudo (os que já eram vencedores com os que acabamos de processar)
+            df_final_completo = pd.concat([df_already_won, df_processados], ignore_index=True)
+            
+            # A função gerar_excel_pipeline já cuida da separação das abas por nós
+            buffer, count_transito, count_vencedores = gerar_excel_pipeline(df_final_completo)
+            
+            st.success(f"🎯 Concluído! Funil organizado: {count_transito} processos Em Trânsito e {count_vencedores} Vencedores Revelados.")
+            
+            st.download_button(
+                "📥 Baixar Pipeline Master (Com Abas de Vendas)", 
+                buffer.getvalue(), 
+                f"Pipeline_Prospeccao_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else: 
+            st.error("Erro ao ler o arquivo. A coluna 'Link' não foi encontrada.")
 
 # ==========================================
 # ABA 5: CLIPPING DE NOTÍCIAS INTELIGENTE
