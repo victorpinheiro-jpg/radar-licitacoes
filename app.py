@@ -194,7 +194,7 @@ def gerar_excel_pipeline(df_master):
             
     return buffer, len(df_transito), len(df_vencedores)
 
-# --- 3. MOTORES DE BUSCA (Aba 1 Segura e com Paginação) ---
+# --- 3. MOTORES DE BUSCA (Aba 1 Segura, Paginação e Furtiva) ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -206,8 +206,9 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
         
     chunks = []
     atual = data_inicio
+    # MODO FURTIVO: Blocos de 7 dias para evitar sobrecarga no PNCP
     while atual <= data_fim:
-        proximo = min(atual + timedelta(days=15), data_fim)
+        proximo = min(atual + timedelta(days=7), data_fim)
         chunks.append((atual, proximo))
         atual = proximo + timedelta(days=1)
         
@@ -220,7 +221,6 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
             str_inicio = inicio_chunk.strftime("%Y%m%d")
             str_fim = fim_chunk.strftime("%Y%m%d")
             
-            # Lógica de Paginação (busca tudo, não apenas os primeiros 50)
             pagina = 1
             tem_mais_paginas = True
             
@@ -229,9 +229,9 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                 
                 sucesso = False
                 tentativas = 0
-                while not sucesso and tentativas < 3:
+                while not sucesso and tentativas < 4:
                     try:
-                        response = requests.get(url, headers=headers, timeout=15)
+                        response = requests.get(url, headers=headers, timeout=30)
                         if response.status_code == 200:
                             dados_pagina = response.json().get("data", [])
                             todos_resultados.extend(dados_pagina)
@@ -243,20 +243,20 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                                 pagina += 1 
                                 
                         elif response.status_code == 429: 
-                            time.sleep(3)
+                            time.sleep(5) # Pausa maior se o PNCP reclamar
                             tentativas += 1
                         else: 
                             tentativas += 1
-                            time.sleep(1.5) 
+                            time.sleep(3) 
                     except: 
                         tentativas += 1
-                        time.sleep(1.5)
+                        time.sleep(3)
                 
                 if not sucesso: 
                     erros.append(f"{modalidade} (bloco {str_inicio} - pag {pagina})")
                     tem_mais_paginas = False 
                 
-                time.sleep(1.0) 
+                time.sleep(2.0) 
             
     return todos_resultados, list(set(erros))
 
@@ -475,13 +475,13 @@ with aba_busca:
         data_fim = st.date_input("Data Final:", value=hoje)
         
         st.subheader("🔎 Filtros Avançados")
-        # CORREÇÃO: Palavra 'obra' vem como padrão para pescar muito mais
-        palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "obra")
+        # Palavra-chave agora vem em branco por padrão para não travar suas buscas
+        palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
         
         st.subheader("💰 Filtro Financeiro")
-        # CORREÇÃO: Valor mínimo baixou de 100M para 10M para não perder contratos pesados
-        valor_min = st.number_input("Valor Mín. (R$):", value=10000000.0, step=1000000.0)
+        # Valor de volta para 100 Milhões para focar nos grandes projetos
+        valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
         buscar = st.button("🔍 Mapear Oportunidades")
 
