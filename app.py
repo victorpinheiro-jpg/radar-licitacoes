@@ -168,7 +168,6 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
             if not sucesso: 
                 erros.append(f"{modalidade} (bloco {str_inicio})")
             
-            # Respiro obrigatório para o firewall do governo não nos bloquear
             time.sleep(1.2) 
             
     return todos_resultados, list(set(erros))
@@ -303,7 +302,10 @@ def worker_prospeccao(row):
     return alvo
 
 def worker_rss(fase, tema, periodo_dias):
-    query = urllib.parse.quote(f'{fase} AND {tema} when:{periodo_dias}d')
+    # AQUI ESTAVA O SEGREDO DO "LIXO": A FALTA DO PARÊNTESE NO TEMA!
+    # A query agora vai formatada como: "Consulta Pública" AND ("Rodovia" OR "Pedágio")
+    query_str = f'{fase} AND {tema} when:{periodo_dias}d'
+    query = urllib.parse.quote(query_str)
     url = f"https://news.google.com/rss/search?q={query}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     res = []
     try:
@@ -544,14 +546,28 @@ with aba_prospeccao:
         except Exception as e: st.error(f"Erro ao processar: {e}")
 
 # ==========================================
-# ABA 5: CLIPPING DE NOTÍCIAS TURBO
+# ABA 5: CLIPPING DE NOTÍCIAS TURBO (AGORA COM MATEMÁTICA CORRETA)
 # ==========================================
 with aba_noticias:
     st.subheader("🌐 Radar de Mercado Inteligente (Busca 360º)")
     st.markdown("O robô faz cruzamentos automáticos em **paralelo** para encontrar notícias de licitações antes mesmo delas virarem edital.")
     
-    lista_fases = ['"Consulta Pública"', '"Audiência Pública"', '"PMI"', '"Aviso de Licitação"', '"Estudos Técnicos Preliminares"']
-    lista_temas = ['"Concessão" OR "PPP"', '"Saneamento"', '"Rodovia" OR "Pedágio"', '"Iluminação Pública"', '"Privatização"']
+    # A MÁGICA DOS PARÊNTESES ESTÁ AQUI, PARA EVITAR NOTÍCIAS DE LIXO/POLÍCIA!
+    lista_fases = [
+        '"Consulta Pública"', 
+        '"Audiência Pública"', 
+        '("PMI" OR "Manifestação de Interesse")', 
+        '"Aviso de Licitação"', 
+        '"Estudos Técnicos Preliminares"'
+    ]
+    
+    lista_temas = [
+        '("Concessão" OR "PPP" OR "Parceria Público-Privada")', 
+        '("Saneamento" OR "Resíduos Sólidos" OR "Marco do Saneamento")', 
+        '("Rodovia" OR "Concessão Rodoviária" OR "Pedágio")', 
+        '("Iluminação Pública" OR "Parque de Iluminação")', 
+        '("Privatização" OR "Desestatização" OR "Leilão B3")'
+    ]
     
     col1, col2, col3 = st.columns(3)
     fases_alvo = col1.multiselect("Fases/Atos:", lista_fases, default=lista_fases)
