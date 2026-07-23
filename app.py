@@ -155,15 +155,12 @@ def aplicar_estilo_excel(writer, df, sheet_name):
 
 # --- 2. NOVA LÓGICA DE MANIPULAÇÃO DO PIPELINE ÚNICO ---
 def load_master_excel(file_buffer):
-    """Lê todas as abas de uma planilha e consolida sem perder dados."""
     try:
         xls = pd.read_excel(file_buffer, sheet_name=None)
-        # Junta todas as abas (Em Trânsito, Vencedores, etc) que não estejam vazias
         df = pd.concat([v for k, v in xls.items() if not v.empty], ignore_index=True)
         if df.empty:
             return pd.DataFrame()
         
-        # Garante que as colunas críticas de funil existam para não quebrar a lógica
         cols_defaults = {
             "Empresa Vencedora (Alvo)": "Ainda sem vencedor publicado",
             "CNPJ do Alvo": "-",
@@ -179,8 +176,6 @@ def load_master_excel(file_buffer):
         return pd.DataFrame()
 
 def gerar_excel_pipeline(df_master):
-    """Gera o arquivo final sempre preservando a estrutura de abas do CRM."""
-    # Separa quem já tem vencedor de quem não tem
     df_vencedores = df_master[df_master["Empresa Vencedora (Alvo)"] != "Ainda sem vencedor publicado"].copy()
     df_transito = df_master[df_master["Empresa Vencedora (Alvo)"] == "Ainda sem vencedor publicado"].copy()
     
@@ -199,7 +194,7 @@ def gerar_excel_pipeline(df_master):
             
     return buffer, len(df_transito), len(df_vencedores)
 
-# --- 3. MOTORES DE BUSCA (Governo e APIs) ---
+# --- 3. MOTORES DE BUSCA (Aba 1 Segura e com Paginação) ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
@@ -224,30 +219,44 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
         for inicio_chunk, fim_chunk in chunks:
             str_inicio = inicio_chunk.strftime("%Y%m%d")
             str_fim = fim_chunk.strftime("%Y%m%d")
-            url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
             
-            sucesso = False
-            tentativas = 0
-            while not sucesso and tentativas < 3:
-                try:
-                    response = requests.get(url, headers=headers, timeout=15)
-                    if response.status_code == 200:
-                        todos_resultados.extend(response.json().get("data", []))
-                        sucesso = True
-                    elif response.status_code == 429: 
-                        time.sleep(3)
+            # Lógica de Paginação (busca tudo, não apenas os primeiros 50)
+            pagina = 1
+            tem_mais_paginas = True
+            
+            while tem_mais_paginas:
+                url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina={pagina}&tamanhoPagina=50"
+                
+                sucesso = False
+                tentativas = 0
+                while not sucesso and tentativas < 3:
+                    try:
+                        response = requests.get(url, headers=headers, timeout=15)
+                        if response.status_code == 200:
+                            dados_pagina = response.json().get("data", [])
+                            todos_resultados.extend(dados_pagina)
+                            sucesso = True
+                            
+                            if len(dados_pagina) < 50:
+                                tem_mais_paginas = False
+                            else:
+                                pagina += 1 
+                                
+                        elif response.status_code == 429: 
+                            time.sleep(3)
+                            tentativas += 1
+                        else: 
+                            tentativas += 1
+                            time.sleep(1.5) 
+                    except: 
                         tentativas += 1
-                    else: 
-                        tentativas += 1
-                        time.sleep(1.5) 
-                except: 
-                    tentativas += 1
-                    time.sleep(1.5)
-            
-            if not sucesso: 
-                erros.append(f"{modalidade} (bloco {str_inicio})")
-            
-            time.sleep(1.0) 
+                        time.sleep(1.5)
+                
+                if not sucesso: 
+                    erros.append(f"{modalidade} (bloco {str_inicio} - pag {pagina})")
+                    tem_mais_paginas = False 
+                
+                time.sleep(1.0) 
             
     return todos_resultados, list(set(erros))
 
@@ -347,7 +356,6 @@ def worker_prospeccao(row):
     alvo = row.to_dict() 
     link = str(alvo.get("Link", "")).strip()
     
-    # CORREÇÃO APLICADA: Valor zera para quem está em trânsito
     alvo["Empresa Vencedora (Alvo)"] = "Ainda sem vencedor publicado"
     alvo["CNPJ do Alvo"] = "-"
     alvo["Valor Arrematado"] = 0.0 
@@ -467,11 +475,13 @@ with aba_busca:
         data_fim = st.date_input("Data Final:", value=hoje)
         
         st.subheader("🔎 Filtros Avançados")
-        palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
+        # CORREÇÃO: Palavra 'obra' vem como padrão para pescar muito mais
+        palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "obra")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
         
         st.subheader("💰 Filtro Financeiro")
-        valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
+        # CORREÇÃO: Valor mínimo baixou de 100M para 10M para não perder contratos pesados
+        valor_min = st.number_input("Valor Mín. (R$):", value=10000000.0, step=1000000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
         buscar = st.button("🔍 Mapear Oportunidades")
 
@@ -526,12 +536,11 @@ with aba_busca:
 # ==========================================
 with aba_interesse:
     st.subheader("⭐ Consolidar Pipeline de Vendas")
-    st.markdown("Faça upload da sua Planilha Mestre (mesmo que tenha múltiplas abas). O robô vai adicionar suas novas seleções sem perder **nenhuma anotação antiga** ou ganhador que já existia.")
+    st.markdown("Faça upload da sua Planilha Mestre. O robô vai adicionar suas novas seleções sem perder **nenhuma anotação antiga** ou ganhador que já existia.")
     
     arquivo_base = st.file_uploader("📂 Upload do Pipeline Master (.xlsx)", type=["xlsx"], key="up_mestre")
     df_export = st.session_state['licitacoes_salvas'].copy()
     
-    # Prepara as licitações novas para entrarem no padrão CRM
     if not df_export.empty:
         for col, default_val in [("Empresa Vencedora (Alvo)", "Ainda sem vencedor publicado"), 
                                  ("CNPJ do Alvo", "-"), 
@@ -542,7 +551,6 @@ with aba_interesse:
     if arquivo_base:
         df_antigo = load_master_excel(arquivo_base)
         if not df_antigo.empty:
-            # Junta o antigo com o novo. "keep='first'" garante que se a licitação já estava no arquivo do usuário (com anotações), a versão do usuário prevalece.
             df_export = pd.concat([df_antigo, df_export]).drop_duplicates(subset=["Identificação"], keep="first")
             st.success("✅ Base antiga consolidada com as novas buscas!")
             
@@ -611,7 +619,6 @@ with aba_prospeccao:
         df_prosp = load_master_excel(arquivo_prospeccao)
         
         if not df_prosp.empty and "Link" in df_prosp.columns:
-            # Separa quem já estava finalizado de quem precisa ser processado
             mask_transito = df_prosp["Empresa Vencedora (Alvo)"] == "Ainda sem vencedor publicado"
             df_to_process = df_prosp[mask_transito].copy()
             df_already_won = df_prosp[~mask_transito].copy()
@@ -630,10 +637,8 @@ with aba_prospeccao:
                             
             df_processados = pd.DataFrame(alvos) if alvos else pd.DataFrame(columns=df_prosp.columns)
             
-            # Recombina tudo (os que já eram vencedores com os que acabamos de processar)
             df_final_completo = pd.concat([df_already_won, df_processados], ignore_index=True)
             
-            # A função gerar_excel_pipeline já cuida da separação das abas por nós
             buffer, count_transito, count_vencedores = gerar_excel_pipeline(df_final_completo)
             
             st.success(f"🎯 Concluído! Funil organizado: {count_transito} processos Em Trânsito e {count_vencedores} Vencedores Revelados.")
