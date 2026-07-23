@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 import urllib.parse
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import random
 
 # --- 1. CONFIGURAÇÃO VISUAL E IDENTIDADE ASA ---
 st.set_page_config(page_title="ASA | Radar de Infraestrutura", page_icon="⚖️", layout="wide")
@@ -28,9 +29,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-if 'licitacoes_salvas' not in st.session_state: st.session_state['licitacoes_salvas'] = pd.DataFrame()
-if 'resultados_busca' not in st.session_state: st.session_state['resultados_busca'] = pd.DataFrame()
-if 'busca_realizada' not in st.session_state: st.session_state['busca_realizada'] = False
+if 'licitacoes_salvas' not in st.session_state: 
+    st.session_state['licitacoes_salvas'] = pd.DataFrame()
+if 'resultados_busca' not in st.session_state: 
+    st.session_state['resultados_busca'] = pd.DataFrame()
+if 'busca_realizada' not in st.session_state: 
+    st.session_state['busca_realizada'] = False
 
 MAPA_MODALIDADES = {
     "Leilão": 1, "Diálogo Competitivo": 2, "Concurso": 3, 
@@ -46,14 +50,18 @@ def calcular_dias_restantes(data_sessao_str):
         dt_sessao = datetime.strptime(data_sessao_str, '%d/%m/%Y %H:%M')
         hoje = datetime.now()
         delta = (dt_sessao.date() - hoje.date()).days
-        if delta < 0: return "Sessão Encerrada"
-        elif delta == 0: return "🚨 É HOJE!"
-        else: return f"Faltam {delta} dias"
+        if delta < 0: 
+            return "Sessão Encerrada"
+        elif delta == 0: 
+            return "🚨 É HOJE!"
+        else: 
+            return f"Faltam {delta} dias"
     except: 
         return "N/A"
 
 def aplicar_estilo_excel(writer, df, sheet_name):
     worksheet = writer.sheets[sheet_name]
+    
     cor_asa = PatternFill(start_color="436468", end_color="436468", fill_type="solid")
     cor_fundo_claro = PatternFill(start_color="F9F9F9", end_color="F9F9F9", fill_type="solid")
     cor_suspensa = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid") 
@@ -81,34 +89,56 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     for col in worksheet.columns:
         col_letter = col[0].column_letter
         col_name = col[0].value
-        if col_name in ["Objeto", "Manchete / Título"]: worksheet.column_dimensions[col_letter].width = 65
-        elif col_name in ["Órgão", "Empresa Vencedora (Alvo)"]: worksheet.column_dimensions[col_letter].width = 40
-        elif col_name in ["Link", "Link da Notícia", "Anotações Equipe"]: worksheet.column_dimensions[col_letter].width = 45
-        elif col_name in ["Status/Fase", "Última Atualização", "Data da Sessão", "Dias Restantes", "Data da Notícia", "Fonte"]: worksheet.column_dimensions[col_letter].width = 20
-        elif col_name in ["Valor Estimado", "Valor Arrematado"]: worksheet.column_dimensions[col_letter].width = 22
-        else: worksheet.column_dimensions[col_letter].width = 18
+        if col_name in ["Objeto", "Manchete / Título"]: 
+            worksheet.column_dimensions[col_letter].width = 65
+        elif col_name in ["Órgão", "Empresa Vencedora (Alvo)"]: 
+            worksheet.column_dimensions[col_letter].width = 40
+        elif col_name in ["Link", "Link da Notícia", "Anotações Equipe"]: 
+            worksheet.column_dimensions[col_letter].width = 45
+        elif col_name in ["Status/Fase", "Última Atualização", "Data da Sessão", "Dias Restantes", "Data da Notícia", "Fonte"]: 
+            worksheet.column_dimensions[col_letter].width = 20
+        elif col_name in ["Valor Estimado", "Valor Arrematado"]: 
+            worksheet.column_dimensions[col_letter].width = 22
+        else: 
+            worksheet.column_dimensions[col_letter].width = 18
             
     for row_idx in range(2, worksheet.max_row + 1):
         status_val = str(worksheet.cell(row=row_idx, column=status_col_idx).value).lower() if status_col_idx else ""
         dias_val = str(worksheet.cell(row=row_idx, column=dias_col_idx).value) if dias_col_idx else ""
+        
         fundo_linha = PatternFill(fill_type=None)
-        if row_idx % 2 == 0: fundo_linha = cor_fundo_claro
-        if "suspen" in status_val: fundo_linha = cor_suspensa
-        elif any(x in status_val for x in ["homolog", "revogad", "cancelad", "fracassad", "desert"]): fundo_linha = cor_morta
-        if "Radar de Prospecção" in sheet_name: fundo_linha = cor_alvo if row_idx % 2 == 0 else PatternFill(fill_type=None)
+        if row_idx % 2 == 0: 
+            fundo_linha = cor_fundo_claro
+            
+        if "suspen" in status_val: 
+            fundo_linha = cor_suspensa
+        elif any(x in status_val for x in ["homolog", "revogad", "cancelad", "fracassad", "desert"]): 
+            fundo_linha = cor_morta
+            
+        if "Radar de Prospecção" in sheet_name: 
+            if row_idx % 2 == 0:
+                fundo_linha = cor_alvo 
+            else:
+                fundo_linha = PatternFill(fill_type=None)
 
         for col_idx in range(1, worksheet.max_column + 1):
             cell = worksheet.cell(row=row_idx, column=col_idx)
             col_name = worksheet.cell(row=1, column=col_idx).value
+            
             cell.fill = fundo_linha
             cell.border = borda_fina
             cell.font = fonte_normal
+            
             if col_name == "Dias Restantes":
-                if "HOJE" in dias_val: cell.font = fonte_urgente
+                if "HOJE" in dias_val: 
+                    cell.font = fonte_urgente
                 elif "Faltam" in dias_val:
                     try:
-                        if int(re.search(r'\d+', dias_val).group()) <= 5: cell.font = fonte_urgente 
-                    except: pass
+                        if int(re.search(r'\d+', dias_val).group()) <= 5: 
+                            cell.font = fonte_urgente 
+                    except: 
+                        pass
+                        
             if col_name in ["Objeto", "Anotações Equipe", "Empresa Vencedora (Alvo)", "Manchete / Título"]:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
                 texto_len = len(str(cell.value)) if cell.value else 0
@@ -117,18 +147,20 @@ def aplicar_estilo_excel(writer, df, sheet_name):
                     worksheet.row_dimensions[row_idx].height = linhas_estimadas * 15
             else: 
                 cell.alignment = Alignment(vertical="top")
+                
             if col_name in ["Valor Estimado", "Valor Arrematado"] and isinstance(cell.value, (int, float)):
                 cell.number_format = 'R$ #,##0.00'
+                
     worksheet.freeze_panes = 'A2'
     worksheet.auto_filter.ref = worksheet.dimensions
 
-# --- 2. MOTORES DE BUSCA (Aba 1 Segura e Sequencial) ---
+# --- 2. MOTORES DE BUSCA (Aba 1 Segura e Sequencial Anti-Bloqueio) ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
-    """ Busca Sequencial para evitar bloqueios do Governo (Seguro e Estável) """
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     todos_resultados = []
     erros = []
+    
     if not modalidades_selecionadas: 
         modalidades_selecionadas = ["Concorrência", "Leilão", "Diálogo Competitivo"]
         
@@ -141,7 +173,9 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
         
     for modalidade in modalidades_selecionadas:
         codigo = MAPA_MODALIDADES.get(modalidade)
-        if not codigo: continue
+        if not codigo: 
+            continue
+            
         for inicio_chunk, fim_chunk in chunks:
             str_inicio = inicio_chunk.strftime("%Y%m%d")
             str_fim = fim_chunk.strftime("%Y%m%d")
@@ -155,7 +189,7 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                     if response.status_code == 200:
                         todos_resultados.extend(response.json().get("data", []))
                         sucesso = True
-                    elif response.status_code == 429: # Trata o bloqueio temporário
+                    elif response.status_code == 429: 
                         time.sleep(3)
                         tentativas += 1
                     else: 
@@ -168,22 +202,27 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
             if not sucesso: 
                 erros.append(f"{modalidade} (bloco {str_inicio})")
             
-            time.sleep(1.2) 
+            # Pausa humana para evitar Shadowban do Governo
+            time.sleep(1.0) 
             
     return todos_resultados, list(set(erros))
 
 def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_selecionados):
-    if not licitacoes: return pd.DataFrame()
+    if not licitacoes: 
+        return pd.DataFrame()
+        
     resultados = []
     lista_palavras = [p.strip().lower() for p in palavras_chave.split(',')] if palavras_chave else []
     ids_adicionados = set()
     
     for lic in licitacoes:
         id_unico = lic.get("id") or lic.get("linkSistemaOrigem")
-        if id_unico in ids_adicionados: continue
+        if id_unico in ids_adicionados: 
+            continue
         
         uf_licitacao = lic.get("unidadeOrgao", {}).get("ufSigla", "N/A")
-        if estados_selecionados and (uf_licitacao not in estados_selecionados): continue
+        if estados_selecionados and (uf_licitacao not in estados_selecionados): 
+            continue
             
         objeto = lic.get("objetoCompra") or lic.get("sinteseObjeto") or lic.get("objeto") or "Descrição indisponível"
         objeto_str = str(objeto).lower()
@@ -229,9 +268,10 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
                 "Link": link_final
             })
             ids_adicionados.add(id_unico)
+            
     return pd.DataFrame(resultados)
 
-# --- 3. WORKERS PARA MULTITHREADING (VELOCIDADE TURBO P/ RASTREIO E B2B) ---
+# --- WORKERS PARA RASTREIO, B2B E CLIPPING (VELOCIDADE MULTITHREAD) ---
 def worker_rastrear(index, row):
     link = str(row["Link"]).strip()
     resultado = {
@@ -284,9 +324,11 @@ def worker_prospeccao(row):
                     alvo["Empresa Vencedora (Alvo)"] = lista[0].get("nomeRazaoSocialFornecedor", alvo["Empresa Vencedora (Alvo)"])
                     alvo["CNPJ do Alvo"] = lista[0].get("niFornecedor", alvo["CNPJ do Alvo"])
                     val = lista[0].get("valorInicial") or lista[0].get("valorGlobal")
-                    if val: alvo["Valor Arrematado"] = float(val)
+                    if val: 
+                        alvo["Valor Arrematado"] = float(val)
                     encontrou = True
-        except: pass
+        except: 
+            pass
         
         if not encontrou:
             try: 
@@ -297,28 +339,44 @@ def worker_prospeccao(row):
                         alvo["Empresa Vencedora (Alvo)"] = lista[0].get("nomeRazaoSocialFornecedor", alvo["Empresa Vencedora (Alvo)"])
                         alvo["CNPJ do Alvo"] = lista[0].get("niFornecedor", alvo["CNPJ do Alvo"])
                         val = lista[0].get("valorTotalHomologado")
-                        if val: alvo["Valor Arrematado"] = float(val)
-            except: pass
+                        if val: 
+                            alvo["Valor Arrematado"] = float(val)
+            except: 
+                pass
     return alvo
 
 def worker_rss(fase, tema, periodo_dias):
-    # AQUI ESTAVA O SEGREDO DO "LIXO": A FALTA DO PARÊNTESE NO TEMA!
-    # A query agora vai formatada como: "Consulta Pública" AND ("Rodovia" OR "Pedágio")
-    query_str = f'{fase} AND {tema} when:{periodo_dias}d'
+    """ Varredura de Notícias com Filtro Inteligente Local """
+    query_str = f'"{fase}" AND "{tema}" when:{periodo_dias}d'
     query = urllib.parse.quote(query_str)
     url = f"https://news.google.com/rss/search?q={query}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     res = []
+    
+    # Filtro obrigatório: Se a notícia não tiver um destes termos, será considerada lixo e descartada.
+    termos_obrigatorios = [
+        "licita", "concess", "ppp", "público-privada", "saneamento", "rodovia", 
+        "pedágio", "leilão", "leilao", "privatiza", "pública", "pmi", "edital", 
+        "infraestrutura", "obras", "desestatização", "manifestação de interesse", "b3"
+    ]
+    
     try:
         resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if resp.status_code == 200:
             root = ET.fromstring(resp.content)
             for item in root.findall('.//item'):
+                titulo = item.find('title').text if item.find('title') is not None else ""
+                titulo_lower = titulo.lower()
+                
+                # Aplicação do Filtro Inteligente
+                if not any(termo in titulo_lower for termo in termos_obrigatorios):
+                    continue 
+
                 data_pub = item.find('pubDate').text if item.find('pubDate') is not None else ""
                 try: 
                     dt_str = datetime.strptime(data_pub, "%a, %d %b %Y %H:%M:%S %Z").strftime("%d/%m/%Y %H:%M")
-                except: dt_str = data_pub
+                except: 
+                    dt_str = data_pub
                 
-                titulo = item.find('title').text if item.find('title') is not None else "Sem Título"
                 link = item.find('link').text if item.find('link') is not None else ""
                 fonte = item.find('source').text if item.find('source') is not None else "Google News"
                 
@@ -329,7 +387,9 @@ def worker_rss(fase, tema, periodo_dias):
                     "Link da Notícia": link,
                     "Anotações Equipe": ""
                 })
-    except: pass
+    except: 
+        pass
+        
     return pd.DataFrame(res)
 
 # --- 4. FRONTEND STREAMLIT ---
@@ -354,7 +414,7 @@ aba_busca, aba_interesse, aba_rastreador, aba_prospeccao, aba_noticias = st.tabs
 ])
 
 # ==========================================
-# ABA 1: BUSCA INICIAL SEGURA (ANTI-BLOQUEIO)
+# ABA 1: BUSCA INICIAL SEGURA
 # ==========================================
 with aba_busca:
     col_filtros, col_resultados = st.columns([1, 3], gap="large")
@@ -375,14 +435,15 @@ with aba_busca:
         st.subheader("💰 Filtro Financeiro")
         valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
+        
         buscar = st.button("🔍 Mapear Oportunidades")
 
     with col_resultados:
         if buscar:
-            with st.spinner("🔍 Varrendo servidores do Governo em modo seguro (Anti-Bloqueio)..."):
+            with st.spinner("🔍 Varrendo servidores do Governo (Modo Anti-Bloqueio)..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
                 if erros: 
-                    st.warning(f"Avisos de rede em alguns blocos de datas (Possível lentidão no portal): {', '.join(erros)}")
+                    st.warning(f"Avisos de rede ou lentidão no PNCP: {', '.join(erros)}")
                 
                 if dados_brutos:
                     st.session_state['resultados_busca'] = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados)
@@ -463,7 +524,8 @@ with aba_interesse:
 # ==========================================
 with aba_rastreador:
     st.subheader("📈 Rastreador de Status")
-    st.markdown("Suba sua planilha. O robô usará **Multithreading** para atualizar dezenas de processos em segundos.")
+    st.markdown("Suba sua planilha. O robô usará **Multithreading** para atualizar processos em segundos.")
+    
     arquivo_rastreio = st.file_uploader("📂 Upload para Rastreio (.xlsx)", type=["xlsx"], key="up_rastreio")
     
     if arquivo_rastreio and st.button("🔄 Rastrear Turbo"):
@@ -497,15 +559,18 @@ with aba_rastreador:
                     "ASA_Rastreada.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-            else: st.error("A coluna 'Link' não foi encontrada na planilha.")
-        except Exception as e: st.error(f"Erro ao processar: {e}")
+            else: 
+                st.error("A coluna 'Link' não foi encontrada na planilha.")
+        except Exception as e: 
+            st.error(f"Erro ao processar: {e}")
 
 # ==========================================
 # ABA 4: RADAR DE PROSPECÇÃO TURBO
 # ==========================================
 with aba_prospeccao:
     st.subheader("🎯 Radar de Prospecção de Clientes")
-    st.markdown("Suba sua planilha. O robô fará uma **Varredura Multithread** rápida para prospectar empresas vencedoras.")
+    st.markdown("Suba sua planilha. O robô fará uma varredura para prospectar empresas vencedoras.")
+    
     arquivo_prospeccao = st.file_uploader("📂 Upload para Prospecção (.xlsx)", type=["xlsx"], key="up_prospeccao")
     
     if arquivo_prospeccao and st.button("🔎 Gerar Leads Turbo"):
@@ -530,6 +595,7 @@ with aba_prospeccao:
                 
                 if not df_limpo.empty:
                     st.dataframe(df_limpo.style.format({"Valor Arrematado": "R$ {:,.2f}"}), hide_index=True)
+                    
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as w:
                         df_limpo.to_excel(w, index=False, sheet_name='Radar de Prospecção ASA')
@@ -541,49 +607,38 @@ with aba_prospeccao:
                         f"Alvos_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-                else: st.info("Ainda não há vencedores listados para os processos desta planilha.")
-            else: st.error("A coluna 'Link' não foi encontrada.")
-        except Exception as e: st.error(f"Erro ao processar: {e}")
+                else: 
+                    st.info("Ainda não há vencedores listados para os processos desta planilha.")
+            else: 
+                st.error("A coluna 'Link' não foi encontrada.")
+        except Exception as e: 
+            st.error(f"Erro ao processar: {e}")
 
 # ==========================================
-# ABA 5: CLIPPING DE NOTÍCIAS TURBO (AGORA COM MATEMÁTICA CORRETA)
+# ABA 5: CLIPPING DE NOTÍCIAS INTELIGENTE
 # ==========================================
 with aba_noticias:
     st.subheader("🌐 Radar de Mercado Inteligente (Busca 360º)")
-    st.markdown("O robô faz cruzamentos automáticos em **paralelo** para encontrar notícias de licitações antes mesmo delas virarem edital.")
+    st.markdown("O robô faz cruzamentos e aplica **Inteligência Artificial de Filtragem** para remover notícias de acidentes e focar só em projetos e licitações.")
     
-    # A MÁGICA DOS PARÊNTESES ESTÁ AQUI, PARA EVITAR NOTÍCIAS DE LIXO/POLÍCIA!
-    lista_fases = [
-        '"Consulta Pública"', 
-        '"Audiência Pública"', 
-        '("PMI" OR "Manifestação de Interesse")', 
-        '"Aviso de Licitação"', 
-        '"Estudos Técnicos Preliminares"'
-    ]
-    
-    lista_temas = [
-        '("Concessão" OR "PPP" OR "Parceria Público-Privada")', 
-        '("Saneamento" OR "Resíduos Sólidos" OR "Marco do Saneamento")', 
-        '("Rodovia" OR "Concessão Rodoviária" OR "Pedágio")', 
-        '("Iluminação Pública" OR "Parque de Iluminação")', 
-        '("Privatização" OR "Desestatização" OR "Leilão B3")'
-    ]
+    lista_fases = ['Consulta Pública', 'Audiência Pública', 'Manifestação de Interesse', 'Aviso de Licitação', 'Estudos Técnicos Preliminares']
+    lista_temas = ['Concessão', 'PPP', 'Saneamento', 'Rodovia', 'Pedágio', 'Iluminação Pública', 'Privatização']
     
     col1, col2, col3 = st.columns(3)
     fases_alvo = col1.multiselect("Fases/Atos:", lista_fases, default=lista_fases)
-    temas_alvo = col2.multiselect("Setores/Temas:", lista_temas, default=lista_temas)
+    temas_alvo = col2.multiselect("Setores/Temas:", lista_temas, default=['Concessão', 'PPP', 'Saneamento', 'Rodovia', 'Privatização'])
     filtro_tempo = col3.selectbox("Tempo de Busca:", [("Últimas 24h", 1), ("Última Semana", 7), ("Último Mês", 30)], format_func=lambda x: x[0])
     
     arquivo_clipping = st.file_uploader("📂 Opcional: Upload do Clipping Antigo (.xlsx)", type=["xlsx"])
         
-    if st.button("📰 Iniciar Varredura 360º Turbo"):
+    if st.button("📰 Iniciar Varredura Inteligente"):
         if fases_alvo and temas_alvo:
             total_buscas = len(fases_alvo) * len(temas_alvo)
             progresso_news = st.progress(0)
             dfs_noticias = []
             
-            with st.spinner(f"Disparando robôs para {total_buscas} buscas cruzadas simultâneas..."):
-                with ThreadPoolExecutor(max_workers=10) as executor:
+            with st.spinner(f"Disparando {total_buscas} buscas cruzadas com filtro anti-lixo..."):
+                with ThreadPoolExecutor(max_workers=5) as executor:
                     futuros = [
                         executor.submit(worker_rss, fase, tema, filtro_tempo[1]) 
                         for fase in fases_alvo for tema in temas_alvo
@@ -606,7 +661,7 @@ with aba_noticias:
                     except: 
                         st.error("Erro ao ler a planilha de clipping antiga.")
                         
-                st.success(f"✅ {len(df_final)} notícias consolidadas!")
+                st.success(f"✅ {len(df_final)} notícias valiosas consolidadas!")
                 st.dataframe(df_final, hide_index=True, use_container_width=True)
                 
                 buffer_news = io.BytesIO()
@@ -615,12 +670,12 @@ with aba_noticias:
                     aplicar_estilo_excel(writer, df_final, 'Clipping Estratégico ASA')
                     
                 st.download_button(
-                    label="📥 Baixar Mega Clipping Excel (.xlsx)",
+                    label="📥 Baixar Clipping Limpo Excel (.xlsx)",
                     data=buffer_news.getvalue(),
                     file_name=f"Clipping_ASA_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else: 
-                st.warning("Nenhuma notícia relevante encontrada para essas combinações no período selecionado.")
+                st.warning("Nenhuma notícia de infraestrutura/licitação encontrada para essas combinações no período selecionado.")
         else: 
-            st.warning("Por favor, selecione pelo menos uma Fase e um Tema para realizar a busca.")
+            st.warning("Selecione pelo menos uma Fase e um Tema.")
