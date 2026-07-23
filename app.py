@@ -10,7 +10,6 @@ import xml.etree.ElementTree as ET
 import urllib.parse
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import random
 
 # --- 1. CONFIGURAÇÃO VISUAL E IDENTIDADE ASA ---
 st.set_page_config(page_title="ASA | Radar de Infraestrutura", page_icon="⚖️", layout="wide")
@@ -123,30 +122,11 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     worksheet.freeze_panes = 'A2'
     worksheet.auto_filter.ref = worksheet.dimensions
 
-# --- 2. MOTORES DE BUSCA ---
-
-def worker_busca_inicial(modalidade, codigo, str_inicio, str_fim):
-    # Atraso aleatório pequeno para não assustar o firewall do governo
-    time.sleep(random.uniform(0.1, 0.8)) 
-    url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-    tentativas = 0
-    while tentativas < 3:
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                return True, response.json().get("data", [])
-            elif response.status_code == 429: # Se o governo avisar que tem muitas requisições, ele espera mais
-                time.sleep(2)
-            else: 
-                time.sleep(1) 
-        except: 
-            time.sleep(1)
-        tentativas += 1
-    return False, f"{modalidade} (bloco {str_inicio})"
-
+# --- 2. MOTORES DE BUSCA (Aba 1 Segura e Sequencial) ---
 @st.cache_data(ttl=300)
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
+    """ Busca Sequencial para evitar bloqueios do Governo (Seguro e Estável) """
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     todos_resultados = []
     erros = []
     if not modalidades_selecionadas: 
@@ -159,23 +139,38 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
         chunks.append((atual, proximo))
         atual = proximo + timedelta(days=1)
         
-    tarefas_busca = []
     for modalidade in modalidades_selecionadas:
         codigo = MAPA_MODALIDADES.get(modalidade)
         if not codigo: continue
         for inicio_chunk, fim_chunk in chunks:
-            tarefas_busca.append((modalidade, codigo, inicio_chunk.strftime('%Y%m%d'), fim_chunk.strftime('%Y%m%d')))
+            str_inicio = inicio_chunk.strftime("%Y%m%d")
+            str_fim = fim_chunk.strftime("%Y%m%d")
+            url = f"https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao?dataInicial={str_inicio}&dataFinal={str_fim}&codigoModalidadeContratacao={codigo}&pagina=1&tamanhoPagina=50"
             
-    # Reduzimos o máximo de workers de 10 para 3. Assim o governo não percebe o ataque simultâneo.
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futuros = [executor.submit(worker_busca_inicial, mod, cod, ini, fim) for mod, cod, ini, fim in tarefas_busca]
-        for futuro in as_completed(futuros):
-            sucesso, resultado = futuro.result()
-            if sucesso:
-                todos_resultados.extend(resultado)
-            else:
-                erros.append(resultado)
-                
+            sucesso = False
+            tentativas = 0
+            while not sucesso and tentativas < 3:
+                try:
+                    response = requests.get(url, headers=headers, timeout=15)
+                    if response.status_code == 200:
+                        todos_resultados.extend(response.json().get("data", []))
+                        sucesso = True
+                    elif response.status_code == 429: # Trata o bloqueio temporário
+                        time.sleep(3)
+                        tentativas += 1
+                    else: 
+                        tentativas += 1
+                        time.sleep(1.5) 
+                except: 
+                    tentativas += 1
+                    time.sleep(1.5)
+            
+            if not sucesso: 
+                erros.append(f"{modalidade} (bloco {str_inicio})")
+            
+            # Respiro obrigatório para o firewall do governo não nos bloquear
+            time.sleep(1.2) 
+            
     return todos_resultados, list(set(erros))
 
 def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_selecionados):
@@ -237,7 +232,7 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
             ids_adicionados.add(id_unico)
     return pd.DataFrame(resultados)
 
-# --- WORKERS DE PROCESSAMENTO EM PARALELO ---
+# --- 3. WORKERS PARA MULTITHREADING (VELOCIDADE TURBO P/ RASTREIO E B2B) ---
 def worker_rastrear(index, row):
     link = str(row["Link"]).strip()
     resultado = {
@@ -357,7 +352,7 @@ aba_busca, aba_interesse, aba_rastreador, aba_prospeccao, aba_noticias = st.tabs
 ])
 
 # ==========================================
-# ABA 1: BUSCA INICIAL TURBO CONTROLADA
+# ABA 1: BUSCA INICIAL SEGURA (ANTI-BLOQUEIO)
 # ==========================================
 with aba_busca:
     col_filtros, col_resultados = st.columns([1, 3], gap="large")
@@ -382,10 +377,10 @@ with aba_busca:
 
     with col_resultados:
         if buscar:
-            with st.spinner("🚀 Varrendo servidores (Modo Silencioso)..."):
+            with st.spinner("🔍 Varrendo servidores do Governo em modo seguro (Anti-Bloqueio)..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
                 if erros: 
-                    st.warning(f"Avisos de rede em alguns blocos de datas: {', '.join(erros)}")
+                    st.warning(f"Avisos de rede em alguns blocos de datas (Possível lentidão no portal): {', '.join(erros)}")
                 
                 if dados_brutos:
                     st.session_state['resultados_busca'] = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados)
@@ -424,7 +419,7 @@ with aba_busca:
                     else:
                         st.warning("Selecione pelo menos uma licitação.")
             else: 
-                st.info("Nenhuma licitação encontrada ou bloqueio temporário do governo.")
+                st.info("Nenhuma licitação encontrada nos filtros estipulados.")
 
 # ==========================================
 # ABA 2: UNIFICADOR DE INTERESSES
