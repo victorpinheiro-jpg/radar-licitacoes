@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 import time
+import random
 import os
 import io
 import re
@@ -194,10 +195,9 @@ def gerar_excel_pipeline(df_master):
             
     return buffer, len(df_transito), len(df_vencedores)
 
-# --- 3. MOTORES DE BUSCA (MODO APRESENTAÇÃO ATIVADO) ---
-# Foi removido o "@st.cache_data" para o robô NÃO gravar erros na memória
+# --- 3. MOTORES DE BUSCA (DISFARCE HUMANO E JITTER ATIVADOS) ---
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "Accept": "application/json"}
     todos_resultados = []
     erros = []
     
@@ -211,8 +211,7 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
         chunks.append((atual, proximo))
         atual = proximo + timedelta(days=1)
         
-    # 🌟 MODO APRESENTAÇÃO: Barra de progresso visual
-    progresso_busca = st.progress(0, text="Conectando aos servidores do PNCP...")
+    progresso_busca = st.progress(0, text="Navegando nos servidores do Governo (Modo Furtivo)...")
     total_passos = len(modalidades_selecionadas) * len(chunks)
     passo_atual = 0
         
@@ -234,10 +233,9 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                 sucesso = False
                 tentativas = 0
                 
-                # Falha rápido (2 tentativas) com timeout curto (10s) para não congelar a tela
-                while not sucesso and tentativas < 2:
+                while not sucesso and tentativas < 3:
                     try:
-                        response = requests.get(url, headers=headers, timeout=10)
+                        response = requests.get(url, headers=headers, timeout=15)
                         if response.status_code == 200:
                             dados_pagina = response.json().get("data", [])
                             todos_resultados.extend(dados_pagina)
@@ -247,26 +245,29 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                                 tem_mais_paginas = False
                             else:
                                 pagina += 1 
+                                # Disfarce Humano: pausa aleatória ao mudar de página
+                                time.sleep(random.uniform(2.5, 5.5))
                                 
                         elif response.status_code == 429: 
-                            time.sleep(2)
+                            # Se for detectado, de um passo pra trás e espere como um humano faria
+                            time.sleep(random.uniform(8.0, 15.0))
                             tentativas += 1
                         else: 
                             tentativas += 1
-                            time.sleep(1) 
+                            time.sleep(random.uniform(3.0, 6.0)) 
                     except: 
                         tentativas += 1
-                        time.sleep(1)
+                        time.sleep(random.uniform(3.0, 6.0))
                 
                 if not sucesso: 
                     erros.append(f"{modalidade} ({str_inicio})")
                     tem_mais_paginas = False 
             
-            # Atualiza a barrinha verde na tela para quem estiver assistindo
             passo_atual += 1
-            progresso_busca.progress(passo_atual / total_passos, text=f"Varrendo {modalidade}: {inicio_chunk.strftime('%d/%m/%Y')}...")
+            progresso_busca.progress(passo_atual / total_passos, text=f"Lendo editais de {modalidade}: {inicio_chunk.strftime('%d/%m/%Y')}...")
+            # Disfarce Humano: pausa entre blocos inteiros
+            time.sleep(random.uniform(3.5, 6.5))
             
-    # Esconde a barra quando terminar
     progresso_busca.empty() 
     return todos_resultados, list(set(erros))
 
@@ -334,7 +335,7 @@ def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_sele
             
     return pd.DataFrame(resultados)
 
-# --- WORKERS DE PROCESSAMENTO PARALELO ---
+# --- WORKERS DE PROCESSAMENTO PARALELO (COM DISFARCE) ---
 def worker_rastrear(index, row):
     link = str(row["Link"]).strip()
     resultado = {
@@ -360,6 +361,8 @@ def worker_rastrear(index, row):
                     resultado["Dias Restantes"] = calcular_dias_restantes(sessao)
         except: 
             pass
+    # Disfarce: não processar planilhas inteiras em 1 segundo
+    time.sleep(random.uniform(0.8, 2.2))
     return resultado
 
 def worker_prospeccao(row):
@@ -402,6 +405,8 @@ def worker_prospeccao(row):
                             alvo["Valor Arrematado"] = float(val)
             except: 
                 pass
+    # Disfarce: não processar planilhas inteiras em 1 segundo
+    time.sleep(random.uniform(0.8, 2.2))
     return alvo
 
 def worker_rss(fase, tema, periodo_dias):
@@ -485,19 +490,17 @@ with aba_busca:
         data_fim = st.date_input("Data Final:", value=hoje)
         
         st.subheader("🔎 Filtros Avançados")
-        # Palavra-chave vem vazia por padrão
         palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
         
         st.subheader("💰 Filtro Financeiro")
-        # Valor de volta para 100 Milhões
         valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
         buscar = st.button("🔍 Mapear Oportunidades")
 
     with col_resultados:
         if buscar:
-            with st.spinner("🔍 Iniciando sistema de varredura..."):
+            with st.spinner("🔍 Disfarce ativo: Extraindo dados como um humano..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
                 if erros: 
                     st.warning(f"Alguns blocos apresentaram oscilação no Governo: {', '.join(erros)}")
@@ -593,8 +596,8 @@ with aba_rastreador:
             progresso = st.progress(0)
             total = len(df_rastrear)
             
-            with st.spinner("Atualizando processos..."):
-                with ThreadPoolExecutor(max_workers=10) as executor:
+            with st.spinner("Lendo processos como um humano..."):
+                with ThreadPoolExecutor(max_workers=5) as executor: # Reduzido para não chamar atenção
                     futuros = [executor.submit(worker_rastrear, idx, row) for idx, row in df_rastrear.iterrows()]
                     for i, futuro in enumerate(as_completed(futuros)):
                         res = futuro.result()
@@ -638,8 +641,8 @@ with aba_prospeccao:
             alvos = []
             
             if total > 0:
-                with st.spinner(f"Investigando {total} contratos em andamento no Governo..."):
-                    with ThreadPoolExecutor(max_workers=10) as executor:
+                with st.spinner(f"Investigando silenciosamente {total} contratos no Governo..."):
+                    with ThreadPoolExecutor(max_workers=5) as executor: # Reduzido para não chamar atenção
                         futuros = [executor.submit(worker_prospeccao, row) for _, row in df_to_process.iterrows()]
                         for i, futuro in enumerate(as_completed(futuros)):
                             alvos.append(futuro.result())
