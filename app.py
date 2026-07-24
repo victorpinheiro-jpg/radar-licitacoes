@@ -153,7 +153,7 @@ def aplicar_estilo_excel(writer, df, sheet_name):
     worksheet.freeze_panes = 'A2'
     worksheet.auto_filter.ref = worksheet.dimensions
 
-# --- 2. NOVA LÓGICA DE MANIPULAÇÃO DO PIPELINE ÚNICO ---
+# --- 2. LÓGICA DE MANIPULAÇÃO DO PIPELINE ÚNICO ---
 def load_master_excel(file_buffer):
     try:
         xls = pd.read_excel(file_buffer, sheet_name=None)
@@ -194,8 +194,8 @@ def gerar_excel_pipeline(df_master):
             
     return buffer, len(df_transito), len(df_vencedores)
 
-# --- 3. MOTORES DE BUSCA (Aba 1 Segura, Paginação e Furtiva) ---
-@st.cache_data(ttl=300)
+# --- 3. MOTORES DE BUSCA (MODO APRESENTAÇÃO ATIVADO) ---
+# Foi removido o "@st.cache_data" para o robô NÃO gravar erros na memória
 def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     todos_resultados = []
@@ -206,11 +206,15 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
         
     chunks = []
     atual = data_inicio
-    # MODO FURTIVO: Blocos de 7 dias para evitar sobrecarga no PNCP
     while atual <= data_fim:
         proximo = min(atual + timedelta(days=7), data_fim)
         chunks.append((atual, proximo))
         atual = proximo + timedelta(days=1)
+        
+    # 🌟 MODO APRESENTAÇÃO: Barra de progresso visual
+    progresso_busca = st.progress(0, text="Conectando aos servidores do PNCP...")
+    total_passos = len(modalidades_selecionadas) * len(chunks)
+    passo_atual = 0
         
     for modalidade in modalidades_selecionadas:
         codigo = MAPA_MODALIDADES.get(modalidade)
@@ -229,9 +233,11 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                 
                 sucesso = False
                 tentativas = 0
-                while not sucesso and tentativas < 4:
+                
+                # Falha rápido (2 tentativas) com timeout curto (10s) para não congelar a tela
+                while not sucesso and tentativas < 2:
                     try:
-                        response = requests.get(url, headers=headers, timeout=30)
+                        response = requests.get(url, headers=headers, timeout=10)
                         if response.status_code == 200:
                             dados_pagina = response.json().get("data", [])
                             todos_resultados.extend(dados_pagina)
@@ -243,21 +249,25 @@ def buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas):
                                 pagina += 1 
                                 
                         elif response.status_code == 429: 
-                            time.sleep(5) # Pausa maior se o PNCP reclamar
+                            time.sleep(2)
                             tentativas += 1
                         else: 
                             tentativas += 1
-                            time.sleep(3) 
+                            time.sleep(1) 
                     except: 
                         tentativas += 1
-                        time.sleep(3)
+                        time.sleep(1)
                 
                 if not sucesso: 
-                    erros.append(f"{modalidade} (bloco {str_inicio} - pag {pagina})")
+                    erros.append(f"{modalidade} ({str_inicio})")
                     tem_mais_paginas = False 
-                
-                time.sleep(2.0) 
             
+            # Atualiza a barrinha verde na tela para quem estiver assistindo
+            passo_atual += 1
+            progresso_busca.progress(passo_atual / total_passos, text=f"Varrendo {modalidade}: {inicio_chunk.strftime('%d/%m/%Y')}...")
+            
+    # Esconde a barra quando terminar
+    progresso_busca.empty() 
     return todos_resultados, list(set(erros))
 
 def filtrar_dados(licitacoes, palavras_chave, valor_min, valor_max, estados_selecionados):
@@ -475,22 +485,22 @@ with aba_busca:
         data_fim = st.date_input("Data Final:", value=hoje)
         
         st.subheader("🔎 Filtros Avançados")
-        # Palavra-chave agora vem em branco por padrão para não travar suas buscas
+        # Palavra-chave vem vazia por padrão
         palavras_chave = st.text_input("Palavras-chave (separadas por vírgula):", "")
         modalidades_selecionadas = st.multiselect("Modalidades:", list(MAPA_MODALIDADES.keys()), default=["Concorrência", "Leilão"])
         
         st.subheader("💰 Filtro Financeiro")
-        # Valor de volta para 100 Milhões para focar nos grandes projetos
+        # Valor de volta para 100 Milhões
         valor_min = st.number_input("Valor Mín. (R$):", value=100000000.0, step=1000000.0)
         valor_max = st.number_input("Valor Máx. (R$):", value=5000000000.0, step=1000000.0)
         buscar = st.button("🔍 Mapear Oportunidades")
 
     with col_resultados:
         if buscar:
-            with st.spinner("🔍 Varrendo servidores do Governo em modo seguro..."):
+            with st.spinner("🔍 Iniciando sistema de varredura..."):
                 dados_brutos, erros = buscar_licitacoes_periodo(data_inicio, data_fim, modalidades_selecionadas)
                 if erros: 
-                    st.warning(f"Avisos de rede ou lentidão no PNCP: {', '.join(erros)}")
+                    st.warning(f"Alguns blocos apresentaram oscilação no Governo: {', '.join(erros)}")
                 
                 if dados_brutos:
                     st.session_state['resultados_busca'] = filtrar_dados(dados_brutos, palavras_chave, valor_min, valor_max, estados_selecionados)
